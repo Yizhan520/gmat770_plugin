@@ -1,0 +1,47 @@
+{
+  "manifest_version": 3,
+  "name": "GMAT 错题整理助手",
+  "version": "2.0.0",
+  "description": "一键提取 GMAT 错题信息，自动生成 Excel 文件，支持题目截图",
+  "permissions": [
+    "activeTab",
+    "storage",
+    "downloads"
+  ],
+  "host_permissions": [
+    "https://gmat.gaofengo.com/*",
+    "https://www.gaofengo.com/*"
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "48": "icons/icon-48.png",
+      "128": "icons/icon-128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon-16.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://gmat.gaofengo.com/*",
+        "https://www.gaofengo.com/*"
+      ],
+      "js": ["lib/html2canvas.min.js", "content-script.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["icons/*"],
+      "matches": ["https://gmat.gaofengo.com/*"]
+    }
+  ]
+}
