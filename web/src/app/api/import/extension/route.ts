@@ -23,6 +23,7 @@ export async function POST(request: NextRequest) {
     const result = await saveImportBatch(batch);
     return NextResponse.json(result);
   } catch (error) {
+    console.error("[extension import] failed", error);
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "插件上传失败。" },
       { status: 500 },

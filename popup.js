@@ -161,6 +161,67 @@
     return value.replace(/\/+$/, '');
   }
 
+  const MAX_UPLOAD_BATCH_QUESTIONS = 4;
+  const MAX_UPLOAD_BODY_BYTES = 2 * 1024 * 1024;
+
+  function estimateUploadBodyBytes(questions) {
+    return new TextEncoder().encode(JSON.stringify({ questions })).length;
+  }
+
+  function splitUploadBatches(questions) {
+    const batches = [];
+    let currentBatch = [];
+
+    questions.forEach((question) => {
+      if (currentBatch.length === 0) {
+        currentBatch = [question];
+        return;
+      }
+
+      const nextBatch = currentBatch.concat(question);
+      const exceedsQuestionLimit = currentBatch.length >= MAX_UPLOAD_BATCH_QUESTIONS;
+      const exceedsSizeLimit = estimateUploadBodyBytes(nextBatch) > MAX_UPLOAD_BODY_BYTES;
+
+      if (exceedsQuestionLimit || exceedsSizeLimit) {
+        batches.push(currentBatch);
+        currentBatch = [question];
+        return;
+      }
+
+      currentBatch = nextBatch;
+    });
+
+    if (currentBatch.length > 0) {
+      batches.push(currentBatch);
+    }
+
+    return batches;
+  }
+
+  async function uploadQuestionBatch(siteBaseUrl, adminKey, questions, batchIndex, batchCount) {
+    const uploadResponse = await fetch(normalizeSiteBaseUrl(siteBaseUrl) + '/api/import/extension', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + adminKey
+      },
+      body: JSON.stringify({ questions })
+    });
+
+    const payload = await uploadResponse.json().catch(() => ({}));
+    if (!uploadResponse.ok) {
+      if (uploadResponse.status === 413) {
+        throw new Error(`第 ${batchIndex}/${batchCount} 批内容仍然过大，请关闭截图后重试`);
+      }
+
+      const serverMessage = payload && typeof payload.error === 'string' ? payload.error : '';
+      const message = serverMessage || `第 ${batchIndex}/${batchCount} 批上传失败（HTTP ${uploadResponse.status}）`;
+      throw new Error(message);
+    }
+
+    return payload;
+  }
+
   async function extractWrongQuestions(withScreenshots) {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     return chrome.tabs.sendMessage(tab.id, {
@@ -189,26 +250,50 @@
         return;
       }
 
-      const uploadResponse = await fetch(normalizeSiteBaseUrl(settings.siteBaseUrl) + '/api/import/extension', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': 'Bearer ' + settings.adminKey
-        },
-        body: JSON.stringify({
-          questions: response.data
-        })
-      });
+      const batches = splitUploadBatches(response.data);
+      let importedCount = 0;
+      let skippedCount = 0;
+      let duplicateBatchCount = 0;
 
-      const payload = await uploadResponse.json().catch(() => ({}));
-      if (!uploadResponse.ok) {
-        throw new Error(payload.error || '网站返回了错误');
+      if (batches.length > 1) {
+        showMessage('info', `已提取 ${response.data.length} 道错题，正在分 ${batches.length} 批上传...`);
       }
 
-      const importedCount = typeof payload.importedCount === 'number' ? payload.importedCount : 0;
-      const skippedCount = typeof payload.skippedCount === 'number' ? payload.skippedCount : 0;
-      const duplicateSuffix = payload.duplicate ? '（检测到重复批次）' : '';
-      showMessage('success', `上传完成：新增 ${importedCount} 条，跳过 ${skippedCount} 条 ${duplicateSuffix}`.trim());
+      for (let index = 0; index < batches.length; index += 1) {
+        const batch = batches[index];
+        showMessage(
+          'info',
+          batches.length === 1
+            ? `正在上传 ${batch.length} 道错题...`
+            : `正在上传第 ${index + 1}/${batches.length} 批（${batch.length} 题）...`
+        );
+
+        try {
+          const payload = await uploadQuestionBatch(
+            settings.siteBaseUrl,
+            settings.adminKey,
+            batch,
+            index + 1,
+            batches.length
+          );
+
+          importedCount += typeof payload.importedCount === 'number' ? payload.importedCount : 0;
+          skippedCount += typeof payload.skippedCount === 'number' ? payload.skippedCount : 0;
+          if (payload.duplicate) {
+            duplicateBatchCount += 1;
+          }
+        } catch (batchError) {
+          const batchMessage = batchError instanceof Error ? batchError.message : '网站返回了错误';
+          const completedBatchCount = index;
+          const progressSummary = completedBatchCount > 0
+            ? `前 ${completedBatchCount} 批已新增 ${importedCount} 条，跳过 ${skippedCount} 条。`
+            : '';
+          throw new Error((progressSummary + batchMessage).trim());
+        }
+      }
+
+      const duplicateSuffix = duplicateBatchCount > 0 ? `（检测到 ${duplicateBatchCount} 个重复批次）` : '';
+      showMessage('success', `上传完成：共 ${response.data.length} 题，新增 ${importedCount} 条，跳过 ${skippedCount} 条 ${duplicateSuffix}`.trim());
       setTimeout(() => { resetButtons(); hideMessage(); }, 4500);
     } catch (error) {
       console.error('[GMAT Helper] Upload error:', error);

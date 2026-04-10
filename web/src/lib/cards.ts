@@ -891,6 +891,15 @@ export async function saveImportBatch(batch: ImportBatch) {
     throw new Error("Supabase 未配置，当前环境只能浏览内置种子数据。");
   }
 
+  const uniqueCardsBySourceKey = new Map<string, (typeof batch.cards)[number]>();
+  batch.cards.forEach((card) => {
+    if (!uniqueCardsBySourceKey.has(card.sourceRowKey)) {
+      uniqueCardsBySourceKey.set(card.sourceRowKey, card);
+    }
+  });
+  const dedupedCards = Array.from(uniqueCardsBySourceKey.values());
+  const duplicateWithinBatchCount = batch.cards.length - dedupedCards.length;
+
   const supabase = getSupabaseAdminClient();
   const existingJobResponse = await supabase
     .from("import_jobs")
@@ -920,7 +929,7 @@ export async function saveImportBatch(batch: ImportBatch) {
     };
   }
 
-  const sourceRowKeys = batch.cards.map((card) => card.sourceRowKey);
+  const sourceRowKeys = dedupedCards.map((card) => card.sourceRowKey);
   const existingCardsResponse = await supabase
     .from("mistake_cards")
     .select("id, source_row_key")
@@ -934,8 +943,8 @@ export async function saveImportBatch(batch: ImportBatch) {
   const existingSourceKeys = new Set(
     (existingCardsResponse.data ?? []).map((row) => row.source_row_key as string),
   );
-  const newCards = batch.cards.filter((card) => !existingSourceKeys.has(card.sourceRowKey));
-  const skippedCount = batch.cards.length - newCards.length;
+  const newCards = dedupedCards.filter((card) => !existingSourceKeys.has(card.sourceRowKey));
+  const skippedCount = duplicateWithinBatchCount + (dedupedCards.length - newCards.length);
 
   const insertPayload = newCards.map((card) => ({
     section: card.section,
