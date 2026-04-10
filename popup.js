@@ -12,12 +12,15 @@
   const statusText = document.getElementById('statusText');
   const statusCount = document.getElementById('statusCount');
   const downloadBtn = document.getElementById('downloadBtn');
+  const uploadBtn = document.getElementById('uploadBtn');
   const messageBar = document.getElementById('messageBar');
   const historyList = document.getElementById('historyList');
   const includeScreenshots = document.getElementById('includeScreenshots');
   const settingsBtn = document.getElementById('settingsBtn');
   const settingsOverlay = document.getElementById('settingsOverlay');
   const settingScreenshots = document.getElementById('settingScreenshots');
+  const settingSiteBaseUrl = document.getElementById('settingSiteBaseUrl');
+  const settingAdminKey = document.getElementById('settingAdminKey');
   const closeSettings = document.getElementById('closeSettings');
   const clearHistoryBtn = document.getElementById('clearHistoryBtn');
 
@@ -42,7 +45,7 @@
 
       if (!tab.url || !tab.url.includes('gaofengo.com')) {
         setStatus('error', '请在 GMAT 网站使用此插件', '');
-        downloadBtn.disabled = true;
+        setActionButtonsDisabled(true);
         return;
       }
 
@@ -50,22 +53,28 @@
 
       if (response && response.success && response.isValidPage) {
         pageInfo = response;
+        const pageLabel = response.pageLabel || '页面';
         if (response.errorCount > 0) {
-          setStatus('ok', '已检测到题目解析页面', `共 ${response.totalCount} 题，其中 ${response.errorCount} 道错题`);
-          downloadBtn.disabled = false;
+          setStatus('ok', `已检测到${pageLabel}`, `共 ${response.totalCount} 题，其中 ${response.errorCount} 道错题`);
+          setActionButtonsDisabled(false);
         } else {
-          setStatus('warn', '当前页面没有错题', `共 ${response.totalCount} 题，全部正确`);
-          downloadBtn.disabled = true;
+          setStatus('warn', `${pageLabel}中没有错题`, `共 ${response.totalCount} 题，全部正确`);
+          setActionButtonsDisabled(true);
         }
       } else {
-        setStatus('warn', '未检测到题目解析页面', '请进入"查看结果"页面');
-        downloadBtn.disabled = true;
+        setStatus('warn', '未检测到可提取页面', '请进入题目解析页或模考报告页');
+        setActionButtonsDisabled(true);
       }
     } catch (error) {
       console.error('[GMAT Helper] checkPage error:', error);
       setStatus('error', '无法连接页面', '请刷新页面后重试');
-      downloadBtn.disabled = true;
+      setActionButtonsDisabled(true);
     }
+  }
+
+  function setActionButtonsDisabled(disabled) {
+    downloadBtn.disabled = disabled;
+    uploadBtn.disabled = disabled;
   }
 
   function setStatus(type, text, count) {
@@ -88,7 +97,7 @@
    */
   async function handleDownload() {
     try {
-      downloadBtn.disabled = true;
+      setActionButtonsDisabled(true);
       downloadBtn.classList.add('loading');
       showMessage('info', '正在提取错题数据...');
 
@@ -106,7 +115,7 @@
 
       if (!response || !response.success || !response.data || response.data.length === 0) {
         showMessage('error', '未能提取到错题数据，请确认页面上有错题');
-        resetButton();
+        resetButtons();
         return;
       }
 
@@ -125,18 +134,87 @@
 
       showMessage('success', `已下载 ${wrongQuestions.length} 道错题到 ${filename}`);
       setTimeout(loadHistory, 500);
-      setTimeout(() => { resetButton(); hideMessage(); }, 4000);
+      setTimeout(() => { resetButtons(); hideMessage(); }, 4000);
 
     } catch (error) {
       console.error('[GMAT Helper] Download error:', error);
       showMessage('error', '下载失败: ' + error.message);
-      resetButton();
+      resetButtons();
     }
   }
 
-  function resetButton() {
-    downloadBtn.disabled = false;
+  function resetButtons() {
+    setActionButtonsDisabled(false);
     downloadBtn.classList.remove('loading');
+    uploadBtn.classList.remove('loading');
+  }
+
+  function getSettings() {
+    return {
+      includeScreenshots: includeScreenshots.checked,
+      siteBaseUrl: (settingSiteBaseUrl.value || '').trim(),
+      adminKey: (settingAdminKey.value || '').trim()
+    };
+  }
+
+  function normalizeSiteBaseUrl(value) {
+    return value.replace(/\/+$/, '');
+  }
+
+  async function extractWrongQuestions(withScreenshots) {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    return chrome.tabs.sendMessage(tab.id, {
+      action: 'extractAllWrongQuestions',
+      includeScreenshots: withScreenshots
+    });
+  }
+
+  async function handleUpload() {
+    try {
+      const settings = getSettings();
+      if (!settings.siteBaseUrl || !settings.adminKey) {
+        settingsOverlay.classList.add('show');
+        showMessage('error', '请先在设置里填写网站地址和 Admin Key');
+        return;
+      }
+
+      setActionButtonsDisabled(true);
+      uploadBtn.classList.add('loading');
+      showMessage('info', '正在提取错题并上传到网站...');
+
+      const response = await extractWrongQuestions(settings.includeScreenshots);
+      if (!response || !response.success || !response.data || response.data.length === 0) {
+        showMessage('error', '未能提取到错题数据，请确认页面上有错题');
+        resetButtons();
+        return;
+      }
+
+      const uploadResponse = await fetch(normalizeSiteBaseUrl(settings.siteBaseUrl) + '/api/import/extension', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer ' + settings.adminKey
+        },
+        body: JSON.stringify({
+          questions: response.data
+        })
+      });
+
+      const payload = await uploadResponse.json().catch(() => ({}));
+      if (!uploadResponse.ok) {
+        throw new Error(payload.error || '网站返回了错误');
+      }
+
+      const importedCount = typeof payload.importedCount === 'number' ? payload.importedCount : 0;
+      const skippedCount = typeof payload.skippedCount === 'number' ? payload.skippedCount : 0;
+      const duplicateSuffix = payload.duplicate ? '（检测到重复批次）' : '';
+      showMessage('success', `上传完成：新增 ${importedCount} 条，跳过 ${skippedCount} 条 ${duplicateSuffix}`.trim());
+      setTimeout(() => { resetButtons(); hideMessage(); }, 4500);
+    } catch (error) {
+      console.error('[GMAT Helper] Upload error:', error);
+      showMessage('error', '上传失败: ' + error.message);
+      resetButtons();
+    }
   }
 
   /**
@@ -356,6 +434,8 @@
       const settings = data.gmat_settings || {};
       includeScreenshots.checked = settings.includeScreenshots || false;
       settingScreenshots.checked = settings.includeScreenshots || false;
+      settingSiteBaseUrl.value = settings.siteBaseUrl || '';
+      settingAdminKey.value = settings.adminKey || '';
     } catch (e) {
       console.error('[GMAT Helper] loadSettings error:', e);
     }
@@ -366,8 +446,9 @@
    */
   async function saveSettings() {
     try {
+      const settings = getSettings();
       await chrome.storage.local.set({
-        gmat_settings: { includeScreenshots: includeScreenshots.checked }
+        gmat_settings: settings
       });
     } catch (e) {
       console.error('[GMAT Helper] saveSettings error:', e);
@@ -404,6 +485,7 @@
    */
   function bindEvents() {
     downloadBtn.addEventListener('click', handleDownload);
+    uploadBtn.addEventListener('click', handleUpload);
 
     includeScreenshots.addEventListener('change', () => {
       settingScreenshots.checked = includeScreenshots.checked;
@@ -413,6 +495,8 @@
       includeScreenshots.checked = settingScreenshots.checked;
       saveSettings();
     });
+    settingSiteBaseUrl.addEventListener('change', saveSettings);
+    settingAdminKey.addEventListener('change', saveSettings);
 
     settingsBtn.addEventListener('click', () => settingsOverlay.classList.add('show'));
     closeSettings.addEventListener('click', () => settingsOverlay.classList.remove('show'));

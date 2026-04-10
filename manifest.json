@@ -10,7 +10,9 @@
   ],
   "host_permissions": [
     "https://gmat.gaofengo.com/*",
-    "https://www.gaofengo.com/*"
+    "https://www.gaofengo.com/*",
+    "https://*/*",
+    "http://*/*"
   ],
   "action": {
     "default_popup": "popup.html",

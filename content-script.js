@@ -19,12 +19,45 @@
 
   console.log('[GMAT Helper] Content script v2.0 loaded on:', window.location.href);
 
+  function normalizeText(text) {
+    return (text || '').replace(/\s+/g, ' ').trim();
+  }
+
+  function dedupeTextList(items) {
+    return Array.from(new Set(items.map(normalizeText).filter(Boolean)));
+  }
+
+  function getClassList(element) {
+    const actionElement = element?.querySelector('a, button');
+    return [
+      ...(element?.className ? String(element.className).split(/\s+/) : []),
+      ...(actionElement?.className ? String(actionElement.className).split(/\s+/) : [])
+    ]
+      .map(item => item.trim())
+      .filter(Boolean);
+  }
+
   /**
    * 检查当前页面是否是题目解析页面
    */
   function isExercisePage() {
     const { pathname } = window.location;
     return /\/(?:index\/)?exercise\/(?:exercisebg|exerciseresult)\//i.test(pathname);
+  }
+
+  function isDryrunReportPage() {
+    const { pathname } = window.location;
+    return /\/(?:index\/)?dryrun\/report\//i.test(pathname);
+  }
+
+  function isSupportedPage() {
+    return isExercisePage() || isDryrunReportPage();
+  }
+
+  function getPageLabel() {
+    if (isDryrunReportPage()) return '模考报告页';
+    if (isExercisePage()) return '题目解析页面';
+    return '未知页面';
   }
 
   /**
@@ -63,7 +96,7 @@
    * 等待题号列表就绪
    */
   async function waitForQuestionList(timeout = 6000) {
-    await waitForSelector('.lis_bor_ul li, .lis_bor li', timeout);
+    await waitForSelector('.lis_bor_ul li, li[onclick*="ajaxGetDetail"]', timeout);
     return getQuestionList();
   }
 
@@ -73,32 +106,98 @@
   function detectQuestionType(examTitleText) {
     if (!examTitleText) return '未知';
     const text = examTitleText.trim();
-    if (text.includes('阅读') || /\bRC\b/.test(text)) return 'RC';
-    if (text.includes('逻辑') || /\bCR\b/.test(text)) return 'CR';
-    if (text.includes('数学PS') || text.includes('问题求解') || /\bPS\b/.test(text)) return 'PS';
-    if (text.includes('数据充分') || /\bDS\b/.test(text)) return 'DS';
-    if (/\bIR\b/.test(text)) return 'IR';
-    if (text.includes('SC') || text.includes('句子改错')) return 'SC';
+    const upperText = text.toUpperCase();
+    if (text.includes('阅读') || /\bRC\b/.test(upperText)) return 'RC';
+    if (text.includes('逻辑') || /\bCR\b/.test(upperText)) return 'CR';
+    if (text.includes('数学PS') || text.includes('问题求解') || /\bPS\b/.test(upperText)) return 'PS';
+    if (text.includes('数据充分') || /\bDS\b/.test(upperText)) return 'DS';
+    if (/\bMSR\b/.test(upperText)) return 'MSR';
+    if (/\bTPA\b/.test(upperText)) return 'TPA';
+    if (/\bGI\b/.test(upperText)) return 'GI';
+    if (/\bTA\b/.test(upperText)) return 'TA';
+    if (text.includes('数据洞察') || text.includes('Data Insights') || /\bIR\b/.test(upperText)) return 'IR';
+    if (text.includes('句子改错') || /\bSC\b/.test(upperText)) return 'SC';
     return '未知';
+  }
+
+  function inferQuestionMeta(element, fallbackTitle = '') {
+    const classList = getClassList(element);
+    const joined = classList.join(' ').toLowerCase();
+    let questionType = '未知';
+    let sectionHint = '';
+
+    if (joined.includes('subject_type_quant_ps')) {
+      questionType = 'PS';
+      sectionHint = 'quant';
+    } else if (joined.includes('subject_type_quant_ds')) {
+      questionType = 'DS';
+      sectionHint = 'quant';
+    } else if (joined.includes('subject_type_verbal_cr')) {
+      questionType = 'CR';
+      sectionHint = 'logic';
+    } else if (joined.includes('subject_type_verbal_rc')) {
+      questionType = 'RC';
+      sectionHint = 'reading';
+    } else if (joined.includes('subject_type_data_ins_msr')) {
+      questionType = 'MSR';
+      sectionHint = 'data_insights';
+    } else if (joined.includes('subject_type_data_ins_tpa')) {
+      questionType = 'TPA';
+      sectionHint = 'data_insights';
+    } else if (joined.includes('subject_type_data_ins_gi')) {
+      questionType = 'GI';
+      sectionHint = 'data_insights';
+    } else if (joined.includes('subject_type_data_ins_ta')) {
+      questionType = 'TA';
+      sectionHint = 'data_insights';
+    } else if (joined.includes('subject_type_data_ins_ds')) {
+      questionType = 'DS';
+      sectionHint = 'data_insights';
+    }
+
+    if (questionType === '未知') {
+      questionType = detectQuestionType(fallbackTitle);
+    }
+
+    if (!sectionHint) {
+      if (['MSR', 'TPA', 'GI', 'TA', 'IR'].includes(questionType)) {
+        sectionHint = 'data_insights';
+      } else if (questionType === 'CR') {
+        sectionHint = 'logic';
+      } else if (questionType === 'RC') {
+        sectionHint = 'reading';
+      } else if (questionType === 'PS' || questionType === 'DS') {
+        sectionHint = joined.includes('subject_type_data_ins') ? 'data_insights' : 'quant';
+      }
+    }
+
+    return {
+      questionType,
+      sectionHint
+    };
   }
 
   /**
    * 获取所有题号及其错题状态
    */
   function getQuestionList() {
-    const items = document.querySelectorAll('.lis_bor_ul li, .lis_bor li');
+    const items = document.querySelectorAll('.lis_bor_ul li, li[onclick*="ajaxGetDetail"]');
     return Array.from(items).map((li, index) => {
-      const actionElement = li.querySelector('a, button') || li;
-      const classNames = [li.className, actionElement.className]
-        .filter(Boolean)
-        .join(' ');
+      const classList = getClassList(li);
+      const meta = inferQuestionMeta(li);
+      const isError = classList.some(name =>
+        name === 'subject_type_error' || (name.startsWith('subject_type_') && name.endsWith('_error'))
+      );
+      const isSlow = classList.includes('subject_type_times') || !!li.querySelector('img[src*="clock"]');
 
       return {
         index: index,
-        number: li.textContent.trim(),
-        isError: classNames.includes('subject_type_error'),
-        isSlow: classNames.includes('subject_type_times'),
-        element: actionElement
+        number: normalizeText(li.textContent),
+        isError: isError,
+        isSlow: isSlow,
+        element: li,
+        questionType: meta.questionType,
+        sectionHint: meta.sectionHint
       };
     });
   }
@@ -163,13 +262,60 @@
     });
   }
 
+  function extractOptions(answerRoot) {
+    if (!answerRoot) {
+      return [];
+    }
+
+    const labelOptions = dedupeTextList(
+      Array.from(answerRoot.querySelectorAll('ul li label')).map(label => label.textContent)
+    );
+    if (labelOptions.length > 0) {
+      return labelOptions;
+    }
+
+    const tableOptions = dedupeTextList(
+      Array.from(answerRoot.querySelectorAll('table tr')).map(row => {
+        const optionValue =
+          row.querySelector('input[value]')?.getAttribute('value') ||
+          row.querySelector('input')?.value ||
+          '';
+        const cells = Array.from(row.querySelectorAll('td, th'))
+          .map(cell => normalizeText(cell.textContent))
+          .filter(Boolean);
+
+        if (optionValue) {
+          const description = cells[cells.length - 1] || '';
+          return description ? `${optionValue}. ${description}` : optionValue;
+        }
+
+        return '';
+      })
+    );
+    if (tableOptions.length > 0) {
+      return tableOptions;
+    }
+
+    const listOptions = dedupeTextList(
+      Array.from(answerRoot.querySelectorAll('li')).map(item => item.textContent)
+    );
+    if (listOptions.length > 0) {
+      return listOptions;
+    }
+
+    return dedupeTextList(
+      Array.from(answerRoot.querySelectorAll('p')).map(item => item.textContent)
+    );
+  }
+
   /**
    * 提取当前显示的题目信息
    */
-  function extractCurrentQuestion() {
+  function extractCurrentQuestion(questionMeta = {}) {
     const data = {
       examTitle: '',
       questionType: '未知',
+      sectionHint: '',
       articleContent: '',
       questionText: '',
       options: [],
@@ -184,63 +330,53 @@
     // 1. 题目标识和题型
     const examTitle = document.querySelector('.examTitle');
     if (examTitle) {
-      data.examTitle = examTitle.textContent.trim();
-      data.questionType = detectQuestionType(data.examTitle);
+      data.examTitle = normalizeText(examTitle.textContent);
+      const titleMeta = inferQuestionMeta(examTitle, data.examTitle);
+      data.questionType = questionMeta.questionType || titleMeta.questionType || detectQuestionType(data.examTitle);
+      data.sectionHint = questionMeta.sectionHint || titleMeta.sectionHint || '';
     }
 
     // 2. 文章正文
     const articleContent = document.querySelector('.article_content');
     if (articleContent) {
-      data.articleContent = articleContent.textContent.trim();
+      data.articleContent = normalizeText(articleContent.textContent);
     }
 
     // 3. 问题文本
     const examQuestion = document.querySelector('.examQuestion');
     if (examQuestion) {
-      data.questionText = examQuestion.textContent.trim();
+      data.questionText = normalizeText(examQuestion.textContent);
     }
 
     // 4. 选项列表
-    const optionLabels = document.querySelectorAll('#quant-answer ul li label');
-    if (optionLabels.length > 0) {
-      data.options = Array.from(optionLabels).map(label => label.textContent.trim());
-    } else {
-      const detailBodies = document.querySelectorAll('.detail-body');
-      if (detailBodies.length > 1) {
-        const labels = detailBodies[1].querySelectorAll('label');
-        if (labels.length > 0) {
-          data.options = Array.from(labels).map(l => l.textContent.trim());
-        } else {
-          const lis = detailBodies[1].querySelectorAll('li');
-          data.options = Array.from(lis).map(li => li.textContent.trim());
-        }
-      }
-    }
+    const answerRoot = document.querySelector('#quant-answer') || document.querySelectorAll('.detail-body')[1] || null;
+    data.options = extractOptions(answerRoot);
 
     // 5. 我的答案和正确答案
-    const iconfontDivs = document.querySelectorAll('.subject_main > .iconfont');
-    if (iconfontDivs.length >= 1) {
-      const myAnswerEl = iconfontDivs[0].querySelector('.this_answer');
-      if (myAnswerEl) data.myAnswer = myAnswerEl.textContent.trim();
-    }
-    if (iconfontDivs.length >= 2) {
-      const correctAnswerEl = iconfontDivs[1].querySelector('.is_true');
-      if (correctAnswerEl) data.correctAnswer = correctAnswerEl.textContent.trim();
+    const myAnswerEl = document.querySelector('.this_answer');
+    if (myAnswerEl) data.myAnswer = normalizeText(myAnswerEl.textContent);
+    const correctAnswerEl = document.querySelector('.is_true');
+    if (correctAnswerEl) data.correctAnswer = normalizeText(correctAnswerEl.textContent);
+
+    if (data.questionType === '未知') {
+      data.questionType = detectQuestionType(data.examTitle);
     }
 
     // 6. 判断是否错题
-    data.isWrong = data.myAnswer !== '' && data.correctAnswer !== '' && data.myAnswer !== data.correctAnswer;
+    data.isWrong =
+      !!questionMeta.isError ||
+      (data.myAnswer !== '' && data.correctAnswer !== '' && data.myAnswer !== data.correctAnswer);
 
     // 7. 用时
     const quantTime = document.querySelector('#quant-time');
     if (quantTime) {
-      data.timeSpent = quantTime.textContent.trim().replace('本题用时：', '');
+      data.timeSpent = normalizeText(quantTime.textContent).replace('本题用时：', '');
     }
 
     // 8. 文字解析
     const textJiexi = document.querySelector('.text_jiexi');
     if (textJiexi) {
-      data.analysis = textJiexi.textContent.trim();
+      data.analysis = normalizeText(textJiexi.textContent);
     }
 
     return data;
@@ -289,7 +425,11 @@
       await expandAnalysis();
 
       // 提取题目数据
-      const data = extractCurrentQuestion();
+      const data = extractCurrentQuestion({
+        questionType: q.questionType,
+        sectionHint: q.sectionHint,
+        isError: q.isError
+      });
       data.questionNumber = q.number;
 
       // 截图
@@ -313,19 +453,22 @@
 
     if (request.action === 'checkPage') {
       (async () => {
-        const isValid = isExercisePage();
+        const isValid = isSupportedPage();
         const questions = isValid ? await waitForQuestionList(4000) : [];
         const errorCount = questions.filter(q => q.isError).length;
 
         sendResponse({
           success: true,
           isValidPage: isValid,
+          pageLabel: getPageLabel(),
           totalCount: questions.length,
           errorCount: errorCount,
           questions: questions.map(q => ({
             number: q.number,
             isError: q.isError,
-            isSlow: q.isSlow
+            isSlow: q.isSlow,
+            questionType: q.questionType,
+            sectionHint: q.sectionHint
           }))
         });
       })().catch(error => {
@@ -352,5 +495,5 @@
     return false;
   });
 
-  console.log('[GMAT Helper] Content script ready. Is exercise page:', isExercisePage());
+  console.log('[GMAT Helper] Content script ready. Is supported page:', isSupportedPage());
 })();

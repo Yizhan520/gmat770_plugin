@@ -103,6 +103,10 @@
     .action-section {
       padding: 16px 20px;
     }
+    .action-stack {
+      display: grid;
+      gap: 10px;
+    }
     .download-btn {
       width: 100%;
       padding: 12px 16px;
@@ -129,6 +133,13 @@
       cursor: not-allowed;
       transform: none;
       box-shadow: none;
+    }
+    .secondary-btn {
+      background: #137333;
+    }
+    .secondary-btn:hover:not(:disabled) {
+      background: #0f5d29;
+      box-shadow: 0 4px 12px rgba(19,115,51,0.28);
     }
     .download-btn .spinner {
       display: none;
@@ -333,6 +344,24 @@
     .settings-close:hover {
       background: #e0e0e0;
     }
+    .settings-input {
+      width: 100%;
+      margin-top: 8px;
+      padding: 9px 10px;
+      border: 1px solid #d9dce1;
+      border-radius: 8px;
+      font-size: 13px;
+      color: #333;
+      background: #fff;
+    }
+    .settings-input:focus {
+      outline: none;
+      border-color: #1a73e8;
+      box-shadow: 0 0 0 3px rgba(26,115,232,0.12);
+    }
+    .settings-item.column {
+      display: block;
+    }
   </style>
 </head>
 <body>
@@ -342,7 +371,7 @@
       <div class="header-icon">📝</div>
       <div>
         <h1>GMAT 错题助手</h1>
-        <div class="header-version">v2.0</div>
+        <div class="header-version">v3.1</div>
       </div>
     </div>
     <button class="settings-btn" id="settingsBtn" title="设置">⚙</button>
@@ -367,11 +396,18 @@
 
   <!-- 操作 -->
   <div class="action-section">
-    <button class="download-btn" id="downloadBtn" disabled>
-      <span class="spinner"></span>
-      <span class="btn-text">📥 下载错题 Excel</span>
-      <span class="btn-loading-text">正在处理...</span>
-    </button>
+    <div class="action-stack">
+      <button class="download-btn" id="downloadBtn" disabled>
+        <span class="spinner"></span>
+        <span class="btn-text">📥 下载错题 Excel</span>
+        <span class="btn-loading-text">正在处理...</span>
+      </button>
+      <button class="download-btn secondary-btn" id="uploadBtn" disabled>
+        <span class="spinner"></span>
+        <span class="btn-text">☁️ 上传到网站</span>
+        <span class="btn-loading-text">正在上传...</span>
+      </button>
+    </div>
     <div class="message-bar" id="messageBar"></div>
   </div>
 
@@ -399,6 +435,16 @@
           <input type="checkbox" id="settingScreenshots">
           <span class="toggle-slider"></span>
         </label>
+      </div>
+      <div class="settings-item column">
+        <div class="settings-label">网站地址</div>
+        <div class="settings-desc">例如 http://localhost:3000 或你的线上域名</div>
+        <input class="settings-input" id="settingSiteBaseUrl" type="url" placeholder="https://your-gmat-site.vercel.app">
+      </div>
+      <div class="settings-item column">
+        <div class="settings-label">Admin Key</div>
+        <div class="settings-desc">插件直传会用这个密钥调用网站的导入接口</div>
+        <input class="settings-input" id="settingAdminKey" type="password" placeholder="请输入部署环境里的 ADMIN_KEY">
       </div>
       <button class="settings-close" id="closeSettings">关闭</button>
     </div>
