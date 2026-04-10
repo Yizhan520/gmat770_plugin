@@ -46,7 +46,6 @@ export default async function MathCardDetailPage({ params }: MathCardDetailProps
   const mathModule = getMathModuleFromCard(card);
   const detailLabels = getMathDetailLabelsFromCard(card);
   const blocks = [
-    { title: detailLabels.promptText || "问题", content: card.promptText },
     { title: detailLabels.logicChainText || "解法", content: card.logicChainText },
     { title: detailLabels.analysisText || "潜在考点", content: card.analysisText },
     { title: detailLabels.personalSummaryText || "解决方法", content: card.personalSummaryText },
@@ -112,7 +111,6 @@ export default async function MathCardDetailPage({ params }: MathCardDetailProps
             isAdmin={isAdmin}
             nextCard={nextCard}
           />
-          {isAdmin ? <AdminCardActions card={card} /> : null}
           <div className="paper-card rounded-[28px] p-6 text-sm leading-7 text-[color:var(--muted)]">
             数学错题的截图附件已移到下方全宽区域，方便直接阅读和放大查看。
           </div>
@@ -121,11 +119,15 @@ export default async function MathCardDetailPage({ params }: MathCardDetailProps
 
       <AssetGallery assets={card.assets} />
 
+      {isAdmin ? <AdminCardActions card={card} /> : null}
+
       <div className="grid gap-6 lg:grid-cols-2">
         {blocks.map((block) => (
           <DetailBlock key={block.title} title={block.title} content={block.content} />
         ))}
       </div>
+
+      <DetailBlock title={detailLabels.promptText || "问题"} content={card.promptText} />
     </div>
   );
 }

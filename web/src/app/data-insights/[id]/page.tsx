@@ -66,18 +66,12 @@ export default async function DataInsightsCardDetailPage({
           <p className="mt-5 text-sm leading-8 text-[color:var(--muted)]">
             来源：{card.sourceKind} · 记录键：{card.sourceRowKey}
           </p>
-          <div className="mt-8 grid gap-4 sm:grid-cols-2">
-            <div className="rounded-[24px] border border-[color:var(--line)] bg-white/70 p-5">
-              <div className="text-xs uppercase tracking-[0.24em] text-[color:var(--muted)]">题目内容</div>
-              <div className="content-prose mt-3 text-sm">{card.promptText}</div>
-            </div>
-            <div className="rounded-[24px] border border-[color:var(--line)] bg-white/70 p-5">
-              <div className="text-xs uppercase tracking-[0.24em] text-[color:var(--muted)]">答案信息</div>
-              <div className="mt-3 space-y-2 text-sm leading-7">
-                <p>我的答案：{card.myAnswer || "暂无"}</p>
-                <p>正确答案：{card.correctAnswer || "暂无"}</p>
-                <p>用时：{card.timeSpent || "暂无"}</p>
-              </div>
+          <div className="mt-8 rounded-[24px] border border-[color:var(--line)] bg-white/70 p-5">
+            <div className="text-xs uppercase tracking-[0.24em] text-[color:var(--muted)]">答案信息</div>
+            <div className="mt-3 space-y-2 text-sm leading-7">
+              <p>我的答案：{card.myAnswer || "暂无"}</p>
+              <p>正确答案：{card.correctAnswer || "暂无"}</p>
+              <p>用时：{card.timeSpent || "暂无"}</p>
             </div>
           </div>
         </div>
@@ -89,7 +83,6 @@ export default async function DataInsightsCardDetailPage({
             isAdmin={isAdmin}
             nextCard={nextCard}
           />
-          {isAdmin ? <AdminCardActions card={card} /> : null}
           <div className="paper-card rounded-[28px] p-6 text-sm leading-7 text-[color:var(--muted)]">
             数据洞察错题的截图附件已移到下方全宽区域，方便直接阅读和放大查看。
           </div>
@@ -98,12 +91,16 @@ export default async function DataInsightsCardDetailPage({
 
       <AssetGallery assets={card.assets} />
 
+      {isAdmin ? <AdminCardActions card={card} /> : null}
+
       <div className="grid gap-6 lg:grid-cols-2">
         <DetailBlock title="解题思路" content={card.logicChainText} />
         <DetailBlock title="个人总结" content={card.personalSummaryText} />
         <DetailBlock title="解析" content={card.analysisText} />
         <DetailBlock title="补充备注" content={card.extraNotesText} />
       </div>
+
+      <DetailBlock title="题目内容" content={card.promptText} />
     </div>
   );
 }

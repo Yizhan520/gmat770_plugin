@@ -19,8 +19,20 @@
 
   console.log('[GMAT Helper] Content script v2.0 loaded on:', window.location.href);
 
+  const DESKTOP_CAPTURE_MIN_WIDTH = 1200;
+
   function normalizeText(text) {
     return (text || '').replace(/\s+/g, ' ').trim();
+  }
+
+  function wait(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  function waitForNextPaint() {
+    return new Promise((resolve) => {
+      requestAnimationFrame(() => requestAnimationFrame(resolve));
+    });
   }
 
   function dedupeTextList(items) {
@@ -212,12 +224,124 @@
         const btn = document.querySelector('.check_text_btn a.date_is_text');
         if (btn) {
           btn.click();
-          setTimeout(resolve, 800);
+          setTimeout(resolve, 1000);
           return;
         }
       }
       resolve();
     });
+  }
+
+  function getCaptureDimensions(element) {
+    const rect = element.getBoundingClientRect();
+    return {
+      width: Math.ceil(Math.max(rect.width, element.scrollWidth, element.offsetWidth, 0)),
+      height: Math.ceil(Math.max(rect.height, element.scrollHeight, element.offsetHeight, 0))
+    };
+  }
+
+  function isRenderableElement(element) {
+    if (!element) {
+      return false;
+    }
+
+    const style = window.getComputedStyle(element);
+    if (style.display === 'none' || style.visibility === 'hidden') {
+      return false;
+    }
+
+    const { width, height } = getCaptureDimensions(element);
+    return width > 4 && height > 4;
+  }
+
+  function normalizeCapturedDataUrl(canvas, dataUrl) {
+    if (!canvas || canvas.width <= 4 || canvas.height <= 4) {
+      return null;
+    }
+
+    if (!dataUrl || dataUrl === 'data:,') {
+      return null;
+    }
+
+    return dataUrl;
+  }
+
+  function shouldForceSurfaceCapture(element, options = {}) {
+    if (!element || !options || typeof options.minWidth !== 'number') {
+      return false;
+    }
+
+    return getCaptureDimensions(element).width < options.minWidth;
+  }
+
+  async function renderToDataUrl(target) {
+    const canvas = await html2canvas(target, {
+      useCORS: true,
+      allowTaint: true,
+      scale: 1.5,
+      logging: false,
+      backgroundColor: '#ffffff'
+    });
+
+    return normalizeCapturedDataUrl(canvas, canvas.toDataURL('image/png'));
+  }
+
+  function prepareCloneForCapture(node) {
+    if (!(node instanceof HTMLElement)) {
+      return;
+    }
+
+    node.classList.remove('hide_text_box');
+    node.style.display = 'block';
+    node.style.visibility = 'visible';
+    node.style.height = 'auto';
+    node.style.maxHeight = 'none';
+    node.style.overflow = 'visible';
+    node.style.opacity = '1';
+
+    Array.from(node.querySelectorAll('.hide_text_box')).forEach((child) => {
+      child.classList.remove('hide_text_box');
+      child.style.display = 'block';
+      child.style.visibility = 'visible';
+      child.style.height = 'auto';
+      child.style.maxHeight = 'none';
+      child.style.overflow = 'visible';
+      child.style.opacity = '1';
+    });
+  }
+
+  function createCaptureSurface(elements, options = {}) {
+    const validElements = elements.filter(Boolean);
+    if (validElements.length === 0) {
+      return null;
+    }
+
+    const maxWidth = Math.max(
+      options.minWidth || 0,
+      ...validElements.map((element) => getCaptureDimensions(element).width)
+    );
+
+    const surface = document.createElement('div');
+    surface.style.position = 'fixed';
+    surface.style.left = '-100000px';
+    surface.style.top = '0';
+    surface.style.zIndex = '-1';
+    surface.style.pointerEvents = 'none';
+    surface.style.background = '#ffffff';
+    surface.style.padding = '24px';
+    surface.style.width = `${Math.max(maxWidth, 320)}px`;
+    surface.style.boxSizing = 'border-box';
+
+    validElements.forEach((element, index) => {
+      const clone = element.cloneNode(true);
+      prepareCloneForCapture(clone);
+      clone.style.width = '100%';
+      clone.style.margin = index === 0 ? '0' : '16px 0 0';
+      surface.appendChild(clone);
+    });
+
+    document.body.appendChild(surface);
+    return surface;
   }
 
   /**
@@ -385,24 +509,84 @@
   /**
    * 截图指定 DOM 元素
    */
-  async function captureElement(selector) {
+  async function captureElement(selector, options = {}) {
     try {
-      const element = document.querySelector(selector);
+      const element = typeof selector === 'string' ? document.querySelector(selector) : selector;
       if (!element || typeof html2canvas === 'undefined') return null;
 
-      const canvas = await html2canvas(element, {
-        useCORS: true,
-        allowTaint: true,
-        scale: 1.5,
-        logging: false,
-        backgroundColor: '#ffffff'
-      });
+      await waitForNextPaint();
+      if (!shouldForceSurfaceCapture(element, options) && isRenderableElement(element)) {
+        const directDataUrl = await renderToDataUrl(element);
+        if (directDataUrl) {
+          return directDataUrl;
+        }
+      }
 
-      return canvas.toDataURL('image/png');
+      const surface = createCaptureSurface([element], options);
+      if (!surface) {
+        return null;
+      }
+
+      try {
+        await waitForNextPaint();
+        return await renderToDataUrl(surface);
+      } finally {
+        surface.remove();
+      }
     } catch (error) {
       console.error('[GMAT Helper] Screenshot error for', selector, ':', error);
       return null;
     }
+  }
+
+  async function captureElements(selectors, options = {}) {
+    const elements = selectors
+      .map((selector) => (typeof selector === 'string' ? document.querySelector(selector) : selector))
+      .filter(Boolean);
+
+    if (elements.length === 0 || typeof html2canvas === 'undefined') {
+      return null;
+    }
+
+    try {
+      const surface = createCaptureSurface(elements, options);
+      if (!surface) {
+        return null;
+      }
+
+      try {
+        await waitForNextPaint();
+        return await renderToDataUrl(surface);
+      } finally {
+        surface.remove();
+      }
+    } catch (error) {
+      console.error('[GMAT Helper] Group screenshot error:', error);
+      return null;
+    }
+  }
+
+  async function captureQuestionScreenshot() {
+    if (isDryrunReportPage()) {
+      return (
+        await captureElements([
+          '.detail-body#quant-cn',
+          '.detail-body#quant-answer'
+        ], { minWidth: DESKTOP_CAPTURE_MIN_WIDTH })
+      ) || captureElement('.subject_detailed', { minWidth: DESKTOP_CAPTURE_MIN_WIDTH });
+    }
+
+    return captureElement('.subject_detailed', { minWidth: DESKTOP_CAPTURE_MIN_WIDTH });
+  }
+
+  async function captureAnalysisScreenshot() {
+    if (isDryrunReportPage()) {
+      return (
+        await captureElement(document.querySelector('.text_analysis'), { minWidth: DESKTOP_CAPTURE_MIN_WIDTH })
+      ) || captureElement(document.querySelector('.text_jiexi'), { minWidth: DESKTOP_CAPTURE_MIN_WIDTH });
+    }
+
+    return captureElement('.text_analysis', { minWidth: DESKTOP_CAPTURE_MIN_WIDTH });
   }
 
   /**
@@ -434,8 +618,16 @@
 
       // 截图
       if (includeScreenshots) {
-        data.questionScreenshot = await captureElement('.subject_detailed');
-        data.analysisScreenshot = await captureElement('.text_analysis');
+        await wait(120);
+        const questionScreenshot = await captureQuestionScreenshot();
+        const analysisScreenshot = await captureAnalysisScreenshot();
+
+        if (questionScreenshot) {
+          data.questionScreenshot = questionScreenshot;
+        }
+        if (analysisScreenshot) {
+          data.analysisScreenshot = analysisScreenshot;
+        }
       }
 
       wrongQuestions.push(data);
