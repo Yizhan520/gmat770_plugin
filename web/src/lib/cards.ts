@@ -6,7 +6,9 @@ import { classifySection } from "@/lib/sections";
 import { revalidateTag, unstable_cache } from "next/cache";
 import {
   getMathKindFromCard,
+  getMathKindFromSourcePayload,
   getMathModuleFromCard,
+  getMathModuleFromSourcePayload,
   normalizeMathKind,
 } from "@/lib/math";
 import { dataUrlToBuffer, sanitizeFileName, sha256Text } from "@/lib/importers/shared";
@@ -37,49 +39,48 @@ type BundledMistakeCard = Omit<MistakeCard, "reviewCount" | "assetCount"> & {
 type BrowseSection = Extract<Section, "logic" | "reading" | "quant" | "data_insights">;
 type CardRowSnapshot = Partial<DbMistakeCardRow> &
   Pick<DbMistakeCardRow, "id" | "section" | "status" | "created_at" | "updated_at">;
+interface ListCardsOptions {
+  page?: number;
+  pageSize?: number;
+  includeFilterOptions?: boolean;
+}
 
 const CARDS_CACHE_TAG = "cards";
 const IMPORT_JOBS_CACHE_TAG = "import-jobs";
 const PUBLIC_DATA_REVALIDATE_SECONDS = 300;
 const IMAGE_CONTENT_TYPES = new Set(["image/png", "image/jpeg", "image/webp"]);
-const SECTION_CARD_COLUMNS = [
+const PUBLIC_CARD_PAGE_SIZE = 24;
+const ADMIN_CARD_PAGE_SIZE = 30;
+const CARD_PREVIEW_COLUMNS = [
   "id",
   "section",
   "reasoning_type",
   "title",
   "prompt_text",
-  "analysis_text",
   "logic_chain_text",
   "personal_summary_text",
-  "extra_notes_text",
   "source_payload",
   "status",
   "review_count",
   "created_at",
   "updated_at",
 ].join(", ");
-const ADMIN_CARD_COLUMNS = [
+const ADMIN_CARD_LIST_COLUMNS = [
   "id",
   "section",
   "reasoning_type",
   "title",
   "prompt_text",
-  "options_text",
-  "my_answer",
-  "correct_answer",
-  "time_spent",
-  "analysis_text",
   "logic_chain_text",
   "personal_summary_text",
-  "extra_notes_text",
   "source_kind",
-  "source_row_key",
-  "source_payload",
   "status",
   "review_count",
   "created_at",
   "updated_at",
 ].join(", ");
+const SECTION_FILTER_METADATA_COLUMNS = ["reasoning_type", "source_payload"].join(", ");
+const DETAIL_NAV_COLUMNS = ["id", "section", "title", "updated_at"].join(", ");
 
 function deriveReviewCount(status: CardStatus) {
   return status === "needs_review" ? 0 : 1;
@@ -264,6 +265,102 @@ function groupAssetCounts(rows: Array<{ card_id: string }>) {
   }
 
   return counts;
+}
+
+function normalizePagination(
+  page: number | undefined,
+  pageSize: number | undefined,
+  fallbackPageSize: number,
+) {
+  const normalizedPage =
+    typeof page === "number" && Number.isFinite(page) && page > 0 ? Math.floor(page) : 1;
+  const normalizedPageSize =
+    typeof pageSize === "number" && Number.isFinite(pageSize) && pageSize > 0
+      ? Math.min(100, Math.floor(pageSize))
+      : fallbackPageSize;
+
+  return {
+    page: normalizedPage,
+    pageSize: normalizedPageSize,
+  };
+}
+
+function getTotalPages(total: number, pageSize: number) {
+  return Math.max(1, Math.ceil(total / pageSize));
+}
+
+function paginateCards(cards: MistakeCard[], options: ListCardsOptions, fallbackPageSize: number) {
+  const { page: requestedPage, pageSize } = normalizePagination(
+    options.page,
+    options.pageSize,
+    fallbackPageSize,
+  );
+  const total = cards.length;
+  const totalPages = getTotalPages(total, pageSize);
+  const page = Math.min(requestedPage, totalPages);
+  const startIndex = (page - 1) * pageSize;
+
+  return {
+    cards: cards.slice(startIndex, startIndex + pageSize),
+    total,
+    page,
+    pageSize,
+    totalPages,
+  };
+}
+
+function sanitizeKeyword(value: string) {
+  return value.replace(/[(),*]/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function buildKeywordOrFilter(fields: string[], rawKeyword?: string) {
+  const keyword = sanitizeKeyword((rawKeyword ?? "").trim());
+  if (!keyword) {
+    return null;
+  }
+
+  return fields.map((field) => `${field}.ilike.*${keyword}*`).join(",");
+}
+
+function hasBrowseFilters(section: BrowseSection, filters: CardFilters) {
+  if ((filters.q ?? "").trim()) {
+    return true;
+  }
+
+  if (filters.status && filters.status !== "all") {
+    return true;
+  }
+
+  if (section === "quant") {
+    return Boolean(
+      (filters.kind && filters.kind !== "all") ||
+        (filters.module && filters.module !== "all"),
+    );
+  }
+
+  return Boolean(filters.type && filters.type !== "all");
+}
+
+function hasAdminFilters(filters: AdminCardFilters) {
+  return Boolean(
+    (filters.q ?? "").trim() ||
+      (filters.section && filters.section !== "all") ||
+      (filters.status && filters.status !== "all") ||
+      (filters.sourceKind && filters.sourceKind !== "all"),
+  );
+}
+
+function getReasoningTypePreferredOrder(section: BrowseSection) {
+  switch (section) {
+    case "logic":
+      return ["CR"];
+    case "reading":
+      return ["RC"];
+    case "data_insights":
+      return ["DS", "MSR", "GI", "TA", "TPA", "IR"];
+    default:
+      return [];
+  }
 }
 
 function filterAdminCards(cards: MistakeCard[], filters: AdminCardFilters) {
@@ -453,46 +550,99 @@ function loadBundledCards() {
   return (bundledSeedData.cards as BundledMistakeCard[]).map((card) => mapBundledCard(card));
 }
 
-const loadCachedSupabaseSectionCards = unstable_cache(
+async function loadAssetCountsForCardIds(cardIds: string[]) {
+  if (cardIds.length === 0) {
+    return new Map<string, number>();
+  }
+
+  const supabase = getSupabaseAdminClient();
+  const response = await supabase
+    .from("mistake_assets")
+    .select("card_id")
+    .in("card_id", cardIds);
+
+  if (response.error) {
+    throw response.error;
+  }
+
+  return groupAssetCounts(((response.data ?? []) as Array<{ card_id: string }>));
+}
+
+const loadCachedSupabaseSectionFilterMetadata = unstable_cache(
   async (section: BrowseSection) => {
     const supabase = getSupabaseAdminClient();
-    const cardsResponse = await supabase
+    const response = await supabase
       .from("mistake_cards")
-      .select(SECTION_CARD_COLUMNS)
-      .eq("section", section)
-      .order("updated_at", { ascending: false })
-      .order("id", { ascending: false });
+      .select(SECTION_FILTER_METADATA_COLUMNS)
+      .eq("section", section);
 
-    if (cardsResponse.error) {
-      throw cardsResponse.error;
+    if (response.error) {
+      throw response.error;
     }
 
-    const rows = ((cardsResponse.data ?? []) as unknown as CardRowSnapshot[]);
-    if (rows.length === 0) {
-      return [];
-    }
-
-    const cardIds = rows.map((row) => row.id);
-    const assetCountsResponse = await supabase
-      .from("mistake_assets")
-      .select("card_id")
-      .in("card_id", cardIds);
-
-    if (assetCountsResponse.error) {
-      throw assetCountsResponse.error;
-    }
-
-    const assetCounts = groupAssetCounts(
-      ((assetCountsResponse.data ?? []) as Array<{ card_id: string }>),
+    const rows = ((response.data ?? []) as unknown) as Array<
+      Pick<DbMistakeCardRow, "reasoning_type" | "source_payload">
+    >;
+    const reasoningTypes = sortReasoningTypes(
+      Array.from(new Set(rows.map((row) => row.reasoning_type ?? "").filter(Boolean))),
+      getReasoningTypePreferredOrder(section),
     );
+    const kinds =
+      section === "quant"
+        ? Array.from(
+            new Set(
+              rows
+                .map((row) =>
+                  getMathKindFromSourcePayload(row.source_payload ?? null, row.reasoning_type ?? ""),
+                )
+                .filter(Boolean),
+            ),
+          ).sort((left, right) => {
+            const order: MathKind[] = ["PS", "DS", "粗心"];
+            return order.indexOf(left as MathKind) - order.indexOf(right as MathKind);
+          })
+        : [];
+    const modules =
+      section === "quant"
+        ? Array.from(
+            new Set(
+              rows
+                .map((row) => getMathModuleFromSourcePayload(row.source_payload ?? null))
+                .filter(Boolean),
+            ),
+          ).sort((left, right) => left.localeCompare(right, "zh-CN"))
+        : [];
 
-    return rows.map((row) =>
-      mapCard(row, {
-        assetCount: assetCounts.get(row.id) ?? 0,
-      }),
-    );
+    return {
+      reasoningTypes,
+      kinds,
+      modules,
+    };
   },
-  ["supabase-section-cards"],
+  ["supabase-section-filter-metadata"],
+  { tags: [CARDS_CACHE_TAG], revalidate: PUBLIC_DATA_REVALIDATE_SECONDS },
+);
+
+const loadCachedSupabaseAdminFilterMetadata = unstable_cache(
+  async () => {
+    const supabase = getSupabaseAdminClient();
+    const response = await supabase.from("mistake_cards").select("source_kind");
+
+    if (response.error) {
+      throw response.error;
+    }
+
+    const rows = ((response.data ?? []) as unknown) as Array<
+      Pick<DbMistakeCardRow, "source_kind">
+    >;
+
+    return {
+      sourceKinds: sortReasoningTypes(
+        Array.from(new Set(rows.map((row) => row.source_kind).filter(Boolean))),
+      ),
+    };
+  },
+  ["supabase-admin-filter-metadata"],
   { tags: [CARDS_CACHE_TAG], revalidate: PUBLIC_DATA_REVALIDATE_SECONDS },
 );
 
@@ -558,57 +708,64 @@ const loadCachedSupabaseImportJobs = unstable_cache(
 );
 
 async function loadSectionCards(section: BrowseSection) {
-  if (hasSupabaseConfig()) {
-    return loadCachedSupabaseSectionCards(section);
-  }
-
   return sortCards(loadBundledCards().filter((card) => card.section === section));
 }
 
 async function loadAllCards() {
-  if (hasSupabaseConfig()) {
-    const supabase = getSupabaseAdminClient();
-    const cardsResponse = await supabase
-      .from("mistake_cards")
-      .select(ADMIN_CARD_COLUMNS)
-      .order("updated_at", { ascending: false })
-      .order("id", { ascending: false });
-
-    if (cardsResponse.error) {
-      throw cardsResponse.error;
-    }
-
-    const rows = (cardsResponse.data ?? []) as unknown as CardRowSnapshot[];
-    if (rows.length === 0) {
-      return [];
-    }
-
-    const cardIds = rows.map((row) => row.id);
-    const assetCountsResponse = await supabase
-      .from("mistake_assets")
-      .select("card_id")
-      .in("card_id", cardIds);
-
-    if (assetCountsResponse.error) {
-      throw assetCountsResponse.error;
-    }
-
-    const assetCounts = groupAssetCounts(
-      ((assetCountsResponse.data ?? []) as Array<{ card_id: string }>),
-    );
-
-    return rows.map((row) =>
-      mapCard(row, {
-        assetCount: assetCounts.get(row.id) ?? 0,
-      }),
-    );
-  }
-
   return sortCards(loadBundledCards());
 }
 
 async function loadSupabaseImportJobs(limit: number) {
   return loadCachedSupabaseImportJobs(limit);
+}
+
+function mapNextCardSnapshot(row: CardRowSnapshot | null) {
+  if (!row) {
+    return null;
+  }
+
+  return {
+    id: row.id,
+    section: row.section,
+    title: row.title ?? "",
+  };
+}
+
+async function getSupabaseNextCard(section: BrowseSection, card: MistakeCard) {
+  const supabase = getSupabaseAdminClient();
+  const olderResponse = await supabase
+    .from("mistake_cards")
+    .select(DETAIL_NAV_COLUMNS)
+    .eq("section", section)
+    .lt("updated_at", card.updatedAt)
+    .order("updated_at", { ascending: false })
+    .order("id", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (olderResponse.error) {
+    throw olderResponse.error;
+  }
+
+  if (olderResponse.data) {
+    return mapNextCardSnapshot(olderResponse.data as unknown as CardRowSnapshot);
+  }
+
+  const sameTimestampResponse = await supabase
+    .from("mistake_cards")
+    .select(DETAIL_NAV_COLUMNS)
+    .eq("section", section)
+    .eq("updated_at", card.updatedAt)
+    .lt("id", card.id)
+    .order("id", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (sameTimestampResponse.error) {
+    throw sameTimestampResponse.error;
+  }
+
+  return mapNextCardSnapshot(sameTimestampResponse.data as unknown as CardRowSnapshot | null);
 }
 
 async function getCardBySection(section: BrowseSection, cardId: string) {
@@ -640,10 +797,7 @@ async function getCardDetailContext(section: BrowseSection, cardId: string) {
     return getDetailContext(cards, cardId);
   }
 
-  const [card, sectionCards] = await Promise.all([
-    loadCachedSupabaseCardDetail(cardId),
-    loadSectionCards(section),
-  ]);
+  const card = await loadCachedSupabaseCardDetail(cardId);
 
   if (!card || card.section !== section) {
     return {
@@ -652,7 +806,7 @@ async function getCardDetailContext(section: BrowseSection, cardId: string) {
     };
   }
 
-  const { nextCard } = getDetailContext(sectionCards, cardId);
+  const nextCard = await getSupabaseNextCard(section, card);
   return {
     card,
     nextCard,
@@ -674,19 +828,235 @@ function getDetailContext(cards: MistakeCard[], cardId: string) {
   };
 }
 
-export async function listLogicCards(filters: CardFilters = {}) {
-  const allLogicCards = await loadSectionCards("logic");
-  const logicCards = filterCards(allLogicCards, "logic", filters);
-  const reasoningTypes = sortReasoningTypes(
-    Array.from(new Set(allLogicCards.map((card) => card.reasoningType).filter(Boolean))),
-    ["CR"],
+async function listSupabaseSectionCards(
+  section: BrowseSection,
+  filters: CardFilters,
+  options: ListCardsOptions,
+) {
+  const { page, pageSize } = normalizePagination(
+    options.page,
+    options.pageSize,
+    PUBLIC_CARD_PAGE_SIZE,
+  );
+  const includeFilterOptions = options.includeFilterOptions !== false;
+  const supabase = getSupabaseAdminClient();
+  let cardsQuery = supabase
+    .from("mistake_cards")
+    .select(CARD_PREVIEW_COLUMNS, { count: "exact" })
+    .eq("section", section);
+
+  if (section === "logic" || section === "reading" || section === "data_insights") {
+    if (filters.type && filters.type !== "all") {
+      cardsQuery = cardsQuery.eq("reasoning_type", filters.type);
+    }
+  }
+
+  if (section === "quant") {
+    if (filters.kind && filters.kind !== "all") {
+      cardsQuery = cardsQuery.eq("reasoning_type", filters.kind);
+    }
+
+    if (filters.module && filters.module !== "all") {
+      cardsQuery = cardsQuery.eq("source_payload->>module", filters.module);
+    }
+  }
+
+  if (filters.status === "pending") {
+    cardsQuery = cardsQuery.eq("review_count", 0);
+  }
+
+  if (filters.status === "reviewed") {
+    cardsQuery = cardsQuery.gt("review_count", 0);
+  }
+
+  const keywordFilter = buildKeywordOrFilter(
+    [
+      "title",
+      "reasoning_type",
+      "prompt_text",
+      "logic_chain_text",
+      "personal_summary_text",
+      "analysis_text",
+      "extra_notes_text",
+    ],
+    filters.q,
   );
 
+  if (keywordFilter) {
+    cardsQuery = cardsQuery.or(keywordFilter);
+  }
+
+  cardsQuery = cardsQuery
+    .order("updated_at", { ascending: false })
+    .order("id", { ascending: false })
+    .range((page - 1) * pageSize, page * pageSize - 1);
+
+  const totalAllPromise = hasBrowseFilters(section, filters)
+    ? supabase.from("mistake_cards").select("id", { count: "exact", head: true }).eq("section", section)
+    : Promise.resolve(null);
+  const metadataPromise = includeFilterOptions
+    ? loadCachedSupabaseSectionFilterMetadata(section)
+    : Promise.resolve(null);
+  const [cardsResponse, totalAllResponse, metadata] = await Promise.all([
+    cardsQuery,
+    totalAllPromise,
+    metadataPromise,
+  ]);
+
+  if (cardsResponse.error) {
+    throw cardsResponse.error;
+  }
+
+  if (totalAllResponse?.error) {
+    throw totalAllResponse.error;
+  }
+
+  const rows = (cardsResponse.data ?? []) as unknown as CardRowSnapshot[];
+  const assetCounts = await loadAssetCountsForCardIds(rows.map((row) => row.id));
+  const cards = rows.map((row) =>
+    mapCard(row, {
+      assetCount: assetCounts.get(row.id) ?? 0,
+    }),
+  );
+  const total = cardsResponse.count ?? cards.length;
+  const totalPages = getTotalPages(total, pageSize);
+
   return {
-    cards: logicCards,
-    total: logicCards.length,
+    cards,
+    total,
+    totalAll: totalAllResponse?.count ?? total,
+    reasoningTypes: metadata?.reasoningTypes ?? [],
+    kinds: metadata?.kinds ?? [],
+    modules: metadata?.modules ?? [],
+    page: Math.min(page, totalPages),
+    pageSize,
+    totalPages,
+    usingSupabase: true,
+  };
+}
+
+async function listSupabaseAdminCards(filters: AdminCardFilters, options: ListCardsOptions) {
+  const { page, pageSize } = normalizePagination(
+    options.page,
+    options.pageSize,
+    ADMIN_CARD_PAGE_SIZE,
+  );
+  const includeFilterOptions = options.includeFilterOptions !== false;
+  const supabase = getSupabaseAdminClient();
+  let cardsQuery = supabase
+    .from("mistake_cards")
+    .select(ADMIN_CARD_LIST_COLUMNS, { count: "exact" });
+
+  if (filters.section && filters.section !== "all") {
+    cardsQuery = cardsQuery.eq("section", filters.section);
+  }
+
+  if (filters.status === "pending") {
+    cardsQuery = cardsQuery.eq("review_count", 0);
+  }
+
+  if (filters.status === "reviewed") {
+    cardsQuery = cardsQuery.gt("review_count", 0);
+  }
+
+  if (filters.sourceKind && filters.sourceKind !== "all") {
+    cardsQuery = cardsQuery.eq("source_kind", filters.sourceKind);
+  }
+
+  const keywordFilter = buildKeywordOrFilter(
+    [
+      "title",
+      "reasoning_type",
+      "prompt_text",
+      "logic_chain_text",
+      "personal_summary_text",
+      "analysis_text",
+      "extra_notes_text",
+      "source_kind",
+      "source_row_key",
+    ],
+    filters.q,
+  );
+
+  if (keywordFilter) {
+    cardsQuery = cardsQuery.or(keywordFilter);
+  }
+
+  cardsQuery = cardsQuery
+    .order("updated_at", { ascending: false })
+    .order("id", { ascending: false })
+    .range((page - 1) * pageSize, page * pageSize - 1);
+
+  const totalAllPromise = hasAdminFilters(filters)
+    ? supabase.from("mistake_cards").select("id", { count: "exact", head: true })
+    : Promise.resolve(null);
+  const metadataPromise = includeFilterOptions
+    ? loadCachedSupabaseAdminFilterMetadata()
+    : Promise.resolve(null);
+  const [cardsResponse, totalAllResponse, metadata] = await Promise.all([
+    cardsQuery,
+    totalAllPromise,
+    metadataPromise,
+  ]);
+
+  if (cardsResponse.error) {
+    throw cardsResponse.error;
+  }
+
+  if (totalAllResponse?.error) {
+    throw totalAllResponse.error;
+  }
+
+  const rows = (cardsResponse.data ?? []) as unknown as CardRowSnapshot[];
+  const assetCounts = await loadAssetCountsForCardIds(rows.map((row) => row.id));
+  const cards = rows.map((row) =>
+    mapCard(row, {
+      assetCount: assetCounts.get(row.id) ?? 0,
+    }),
+  );
+  const total = cardsResponse.count ?? cards.length;
+  const totalPages = getTotalPages(total, pageSize);
+
+  return {
+    cards,
+    total,
+    totalAll: totalAllResponse?.count ?? total,
+    sourceKinds: metadata?.sourceKinds ?? [],
+    page: Math.min(page, totalPages),
+    pageSize,
+    totalPages,
+    usingSupabase: true,
+  };
+}
+
+export async function listLogicCards(filters: CardFilters = {}, options: ListCardsOptions = {}) {
+  if (hasSupabaseConfig()) {
+    const result = await listSupabaseSectionCards("logic", filters, options);
+    return {
+      ...result,
+      reasoningTypes: result.reasoningTypes,
+    };
+  }
+
+  const allLogicCards = await loadSectionCards("logic");
+  const logicCards = filterCards(allLogicCards, "logic", filters);
+  const paginated = paginateCards(logicCards, options, PUBLIC_CARD_PAGE_SIZE);
+  const reasoningTypes =
+    options.includeFilterOptions === false
+      ? []
+      : sortReasoningTypes(
+          Array.from(new Set(allLogicCards.map((card) => card.reasoningType).filter(Boolean))),
+          ["CR"],
+        );
+
+  return {
+    cards: paginated.cards,
+    total: paginated.total,
     totalAll: allLogicCards.length,
     reasoningTypes,
+    page: paginated.page,
+    pageSize: paginated.pageSize,
+    totalPages: paginated.totalPages,
     usingSupabase: hasSupabaseConfig(),
   };
 }
@@ -699,19 +1069,34 @@ export async function getLogicCardDetailContext(cardId: string) {
   return getCardDetailContext("logic", cardId);
 }
 
-export async function listReadingCards(filters: CardFilters = {}) {
+export async function listReadingCards(filters: CardFilters = {}, options: ListCardsOptions = {}) {
+  if (hasSupabaseConfig()) {
+    const result = await listSupabaseSectionCards("reading", filters, options);
+    return {
+      ...result,
+      reasoningTypes: result.reasoningTypes,
+    };
+  }
+
   const allReadingCards = await loadSectionCards("reading");
   const readingCards = filterCards(allReadingCards, "reading", filters);
-  const reasoningTypes = sortReasoningTypes(
-    Array.from(new Set(allReadingCards.map((card) => card.reasoningType).filter(Boolean))),
-    ["RC"],
-  );
+  const paginated = paginateCards(readingCards, options, PUBLIC_CARD_PAGE_SIZE);
+  const reasoningTypes =
+    options.includeFilterOptions === false
+      ? []
+      : sortReasoningTypes(
+          Array.from(new Set(allReadingCards.map((card) => card.reasoningType).filter(Boolean))),
+          ["RC"],
+        );
 
   return {
-    cards: readingCards,
-    total: readingCards.length,
+    cards: paginated.cards,
+    total: paginated.total,
     totalAll: allReadingCards.length,
     reasoningTypes,
+    page: paginated.page,
+    pageSize: paginated.pageSize,
+    totalPages: paginated.totalPages,
     usingSupabase: hasSupabaseConfig(),
   };
 }
@@ -724,25 +1109,44 @@ export async function getReadingCardDetailContext(cardId: string) {
   return getCardDetailContext("reading", cardId);
 }
 
-export async function listMathCards(filters: CardFilters = {}) {
+export async function listMathCards(filters: CardFilters = {}, options: ListCardsOptions = {}) {
+  if (hasSupabaseConfig()) {
+    const result = await listSupabaseSectionCards("quant", filters, options);
+    return {
+      ...result,
+      kinds: result.kinds,
+      modules: result.modules,
+    };
+  }
+
   const allMathCards = await loadSectionCards("quant");
   const mathCards = filterCards(allMathCards, "quant", filters);
-  const kinds = Array.from(
-    new Set(allMathCards.map((card) => getMathKindFromCard(card)).filter(Boolean)),
-  ).sort((left, right) => {
-    const order: MathKind[] = ["PS", "DS", "粗心"];
-    return order.indexOf(left as MathKind) - order.indexOf(right as MathKind);
-  });
-  const modules = Array.from(
-    new Set(allMathCards.map((card) => getMathModuleFromCard(card)).filter(Boolean)),
-  ).sort((left, right) => left.localeCompare(right, "zh-CN"));
+  const paginated = paginateCards(mathCards, options, PUBLIC_CARD_PAGE_SIZE);
+  const kinds =
+    options.includeFilterOptions === false
+      ? []
+      : Array.from(
+          new Set(allMathCards.map((card) => getMathKindFromCard(card)).filter(Boolean)),
+        ).sort((left, right) => {
+          const order: MathKind[] = ["PS", "DS", "粗心"];
+          return order.indexOf(left as MathKind) - order.indexOf(right as MathKind);
+        });
+  const modules =
+    options.includeFilterOptions === false
+      ? []
+      : Array.from(
+          new Set(allMathCards.map((card) => getMathModuleFromCard(card)).filter(Boolean)),
+        ).sort((left, right) => left.localeCompare(right, "zh-CN"));
 
   return {
-    cards: mathCards,
-    total: mathCards.length,
+    cards: paginated.cards,
+    total: paginated.total,
     totalAll: allMathCards.length,
     kinds,
     modules,
+    page: paginated.page,
+    pageSize: paginated.pageSize,
+    totalPages: paginated.totalPages,
     usingSupabase: hasSupabaseConfig(),
   };
 }
@@ -755,19 +1159,39 @@ export async function getMathCardDetailContext(cardId: string) {
   return getCardDetailContext("quant", cardId);
 }
 
-export async function listDataInsightsCards(filters: CardFilters = {}) {
+export async function listDataInsightsCards(
+  filters: CardFilters = {},
+  options: ListCardsOptions = {},
+) {
+  if (hasSupabaseConfig()) {
+    const result = await listSupabaseSectionCards("data_insights", filters, options);
+    return {
+      ...result,
+      reasoningTypes: result.reasoningTypes,
+    };
+  }
+
   const allDataInsightsCards = await loadSectionCards("data_insights");
   const dataInsightsCards = filterCards(allDataInsightsCards, "data_insights", filters);
-  const reasoningTypes = sortReasoningTypes(
-    Array.from(new Set(allDataInsightsCards.map((card) => card.reasoningType).filter(Boolean))),
-    ["DS", "MSR", "GI", "TA", "TPA", "IR"],
-  );
+  const paginated = paginateCards(dataInsightsCards, options, PUBLIC_CARD_PAGE_SIZE);
+  const reasoningTypes =
+    options.includeFilterOptions === false
+      ? []
+      : sortReasoningTypes(
+          Array.from(
+            new Set(allDataInsightsCards.map((card) => card.reasoningType).filter(Boolean)),
+          ),
+          ["DS", "MSR", "GI", "TA", "TPA", "IR"],
+        );
 
   return {
-    cards: dataInsightsCards,
-    total: dataInsightsCards.length,
+    cards: paginated.cards,
+    total: paginated.total,
     totalAll: allDataInsightsCards.length,
     reasoningTypes,
+    page: paginated.page,
+    pageSize: paginated.pageSize,
+    totalPages: paginated.totalPages,
     usingSupabase: hasSupabaseConfig(),
   };
 }
@@ -780,18 +1204,32 @@ export async function getDataInsightsCardDetailContext(cardId: string) {
   return getCardDetailContext("data_insights", cardId);
 }
 
-export async function listAdminCards(filters: AdminCardFilters = {}) {
+export async function listAdminCards(
+  filters: AdminCardFilters = {},
+  options: ListCardsOptions = {},
+) {
+  if (hasSupabaseConfig()) {
+    return listSupabaseAdminCards(filters, options);
+  }
+
   const allCards = await loadAllCards();
   const cards = filterAdminCards(allCards, filters);
-  const sourceKinds = sortReasoningTypes(
-    Array.from(new Set(allCards.map((card) => card.sourceKind).filter(Boolean))),
-  );
+  const paginated = paginateCards(cards, options, ADMIN_CARD_PAGE_SIZE);
+  const sourceKinds =
+    options.includeFilterOptions === false
+      ? []
+      : sortReasoningTypes(
+          Array.from(new Set(allCards.map((card) => card.sourceKind).filter(Boolean))),
+        );
 
   return {
-    cards,
-    total: cards.length,
+    cards: paginated.cards,
+    total: paginated.total,
     totalAll: allCards.length,
     sourceKinds,
+    page: paginated.page,
+    pageSize: paginated.pageSize,
+    totalPages: paginated.totalPages,
     usingSupabase: hasSupabaseConfig(),
   };
 }

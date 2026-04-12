@@ -1,4 +1,5 @@
 import { CardPreview } from "@/components/card-preview";
+import { PaginationControls } from "@/components/pagination-controls";
 import { REVIEW_STATUS_OPTIONS } from "@/lib/sections";
 import { listReadingCards } from "@/lib/cards";
 
@@ -10,15 +11,22 @@ interface ReadingPageProps {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }
 
+function parsePage(value: string | string[] | undefined) {
+  const parsed = Number.parseInt(takeFirst(value) ?? "", 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 1;
+}
+
 export default async function ReadingPage({ searchParams }: ReadingPageProps) {
   const params = await searchParams;
+  const page = parsePage(params.page);
   const filters = {
     q: takeFirst(params.q) ?? "",
     type: takeFirst(params.type) ?? "all",
     status: (takeFirst(params.status) as "all" | "pending" | "reviewed" | undefined) ?? "all",
   };
 
-  const { cards, reasoningTypes, total, totalAll } = await listReadingCards(filters);
+  const { cards, reasoningTypes, total, totalAll, page: currentPage, totalPages } =
+    await listReadingCards(filters, { page });
 
   return (
     <div className="mx-auto flex w-full max-w-7xl flex-col gap-8 px-5 py-8 sm:px-8 sm:py-10">
@@ -30,6 +38,11 @@ export default async function ReadingPage({ searchParams }: ReadingPageProps) {
             <p className="mt-3 max-w-4xl text-sm leading-7 text-[color:var(--muted)]">
               支持按题型、复习状态和关键词筛选。当前共收录 {totalAll} 张阅读卡片，本次筛选命中 {total} 张。
             </p>
+            {totalPages > 1 ? (
+              <p className="mt-2 text-sm leading-7 text-[color:var(--muted)]">
+                当前浏览第 {currentPage} / {totalPages} 页。
+              </p>
+            ) : null}
           </div>
           <form className="grid max-w-5xl gap-3 rounded-[28px] border border-[color:var(--line)] bg-white/70 p-4 sm:grid-cols-2 xl:grid-cols-[minmax(0,1.3fr)_minmax(0,0.85fr)_minmax(0,0.85fr)_auto]">
             <input
@@ -74,11 +87,19 @@ export default async function ReadingPage({ searchParams }: ReadingPageProps) {
       </section>
 
       {cards.length > 0 ? (
-        <section className="grid gap-5 md:grid-cols-2 xl:grid-cols-3">
-          {cards.map((card) => (
-            <CardPreview key={card.id} card={card} />
-          ))}
-        </section>
+        <>
+          <section className="grid gap-5 md:grid-cols-2 xl:grid-cols-3">
+            {cards.map((card) => (
+              <CardPreview key={card.id} card={card} />
+            ))}
+          </section>
+          <PaginationControls
+            pathname="/reading"
+            currentPage={currentPage}
+            totalPages={totalPages}
+            searchParams={filters}
+          />
+        </>
       ) : (
         <section className="paper-card rounded-[30px] p-8 text-sm leading-7 text-[color:var(--muted)]">
           没有匹配的卡片。你可以换一个关键词，或者取消题型/复习状态筛选。

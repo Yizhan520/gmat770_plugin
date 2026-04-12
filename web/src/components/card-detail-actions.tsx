@@ -2,27 +2,39 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { startTransition, useState } from "react";
+import { startTransition, useEffect, useState } from "react";
+import { useAdminSession } from "@/lib/use-admin-session";
 import { getCardDetailPath, getReviewCountLabel } from "@/lib/sections";
 import type { MistakeCard } from "@/lib/types";
 
 interface CardDetailActionsProps {
   cardId: string;
   initialReviewCount: number;
-  isAdmin: boolean;
   nextCard: Pick<MistakeCard, "id" | "section" | "title"> | null;
+  adminEditHref?: string;
 }
 
 export function CardDetailActions({
   cardId,
   initialReviewCount,
-  isAdmin,
   nextCard,
+  adminEditHref,
 }: CardDetailActionsProps) {
   const router = useRouter();
+  const { isAdmin } = useAdminSession();
   const [reviewCount, setReviewCount] = useState(initialReviewCount);
   const [message, setMessage] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  useEffect(() => {
+    if (nextCard) {
+      router.prefetch(getCardDetailPath(nextCard));
+    }
+
+    if (isAdmin && adminEditHref) {
+      router.prefetch(adminEditHref);
+    }
+  }, [adminEditHref, isAdmin, nextCard, router]);
 
   async function handleReviewComplete() {
     setIsSubmitting(true);
@@ -62,6 +74,14 @@ export function CardDetailActions({
         </div>
       </div>
       <div className="mt-4 space-y-3">
+        {isAdmin && adminEditHref ? (
+          <Link
+            href={adminEditHref}
+            className="flex rounded-full bg-[color:var(--accent)] px-5 py-3 text-sm font-medium text-white transition hover:bg-[color:var(--accent-strong)]"
+          >
+            打开完整编辑器
+          </Link>
+        ) : null}
         {nextCard ? (
           <Link
             href={getCardDetailPath(nextCard)}

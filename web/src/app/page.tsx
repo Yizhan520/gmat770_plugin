@@ -9,15 +9,15 @@ import {
 
 export default async function Home() {
   const [logicResult, readingResult, mathResult, dataInsightsResult] = await Promise.all([
-    listLogicCards(),
-    listReadingCards(),
-    listMathCards(),
-    listDataInsightsCards(),
+    listLogicCards({}, { pageSize: 3, includeFilterOptions: false }),
+    listReadingCards({}, { pageSize: 1, includeFilterOptions: false }),
+    listMathCards({}, { pageSize: 3, includeFilterOptions: false }),
+    listDataInsightsCards({}, { pageSize: 3, includeFilterOptions: false }),
   ]);
 
-  const featuredLogicCards = logicResult.cards.slice(0, 3);
-  const featuredMathCards = mathResult.cards.slice(0, 3);
-  const featuredDataInsightsCards = dataInsightsResult.cards.slice(0, 3);
+  const featuredLogicCards = logicResult.cards;
+  const featuredMathCards = mathResult.cards;
+  const featuredDataInsightsCards = dataInsightsResult.cards;
   const totalCards =
     logicResult.totalAll +
     readingResult.totalAll +

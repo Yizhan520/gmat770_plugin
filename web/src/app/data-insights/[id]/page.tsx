@@ -1,10 +1,9 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { AdminCardActions } from "@/components/admin-card-actions";
 import { AssetGallery } from "@/components/asset-gallery";
 import { CardDetailActions } from "@/components/card-detail-actions";
+import { DetailAdminPanel } from "@/components/detail-admin-panel";
 import { getDataInsightsCardDetailContext } from "@/lib/cards";
-import { hasAdminSession } from "@/lib/auth";
 import { getReviewCountLabel } from "@/lib/sections";
 
 interface DataInsightsCardDetailProps {
@@ -30,10 +29,7 @@ export default async function DataInsightsCardDetailPage({
   params,
 }: DataInsightsCardDetailProps) {
   const { id } = await params;
-  const [{ card, nextCard }, isAdmin] = await Promise.all([
-    getDataInsightsCardDetailContext(id),
-    hasAdminSession(),
-  ]);
+  const { card, nextCard } = await getDataInsightsCardDetailContext(id);
 
   if (!card) {
     notFound();
@@ -80,8 +76,8 @@ export default async function DataInsightsCardDetailPage({
           <CardDetailActions
             cardId={card.id}
             initialReviewCount={card.reviewCount}
-            isAdmin={isAdmin}
             nextCard={nextCard}
+            adminEditHref={`/admin/cards/${card.id}`}
           />
           <div className="paper-card rounded-[28px] p-6 text-sm leading-7 text-[color:var(--muted)]">
             数据洞察错题的截图附件已移到下方全宽区域，方便直接阅读和放大查看。
@@ -91,7 +87,7 @@ export default async function DataInsightsCardDetailPage({
 
       <AssetGallery assets={card.assets} />
 
-      {isAdmin ? <AdminCardActions card={card} /> : null}
+      <DetailAdminPanel card={card} />
 
       <div className="grid gap-6 lg:grid-cols-2">
         <DetailBlock title="解题思路" content={card.logicChainText} />

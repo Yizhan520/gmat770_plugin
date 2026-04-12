@@ -234,6 +234,8 @@ export function AssetGallery({ assets }: AssetGalleryProps) {
                     <img
                       src={asset.publicUrl}
                       alt={ASSET_KIND_LABELS[asset.assetKind]}
+                      loading="lazy"
+                      decoding="async"
                       className="asset-inline-preview"
                     />
                   </div>
@@ -334,6 +336,7 @@ export function AssetGallery({ assets }: AssetGalleryProps) {
                   <img
                     src={activeAsset.publicUrl}
                     alt={ASSET_KIND_LABELS[activeAsset.assetKind]}
+                    decoding="async"
                     className="asset-viewer-image"
                     draggable={false}
                   />

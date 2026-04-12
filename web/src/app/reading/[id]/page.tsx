@@ -1,10 +1,9 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { AdminCardActions } from "@/components/admin-card-actions";
 import { AssetGallery } from "@/components/asset-gallery";
 import { CardDetailActions } from "@/components/card-detail-actions";
+import { DetailAdminPanel } from "@/components/detail-admin-panel";
 import { getReadingCardDetailContext } from "@/lib/cards";
-import { hasAdminSession } from "@/lib/auth";
 import { getReviewCountLabel } from "@/lib/sections";
 
 interface ReadingCardDetailProps {
@@ -28,10 +27,7 @@ function DetailBlock({
 
 export default async function ReadingCardDetailPage({ params }: ReadingCardDetailProps) {
   const { id } = await params;
-  const [{ card, nextCard }, isAdmin] = await Promise.all([
-    getReadingCardDetailContext(id),
-    hasAdminSession(),
-  ]);
+  const { card, nextCard } = await getReadingCardDetailContext(id);
 
   if (!card) {
     notFound();
@@ -78,8 +74,8 @@ export default async function ReadingCardDetailPage({ params }: ReadingCardDetai
           <CardDetailActions
             cardId={card.id}
             initialReviewCount={card.reviewCount}
-            isAdmin={isAdmin}
             nextCard={nextCard}
+            adminEditHref={`/admin/cards/${card.id}`}
           />
           <div className="paper-card rounded-[28px] p-6 text-sm leading-7 text-[color:var(--muted)]">
             阅读错题的截图附件已移到下方全宽区域，方便直接阅读和放大查看。
@@ -89,7 +85,7 @@ export default async function ReadingCardDetailPage({ params }: ReadingCardDetai
 
       <AssetGallery assets={card.assets} />
 
-      {isAdmin ? <AdminCardActions card={card} /> : null}
+      <DetailAdminPanel card={card} />
 
       <div className="grid gap-6 lg:grid-cols-2">
         <DetailBlock title="解题思路" content={card.logicChainText} />

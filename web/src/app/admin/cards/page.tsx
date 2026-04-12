@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
+import { PaginationControls } from "@/components/pagination-controls";
 import { listAdminCards } from "@/lib/cards";
 import { hasAdminSession } from "@/lib/auth";
 import { hasSupabaseConfig } from "@/lib/env";
@@ -12,6 +13,11 @@ function takeFirst(value: string | string[] | undefined) {
 
 interface AdminCardsPageProps {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
+}
+
+function parsePage(value: string | string[] | undefined) {
+  const parsed = Number.parseInt(takeFirst(value) ?? "", 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 1;
 }
 
 function formatTimestamp(value: string) {
@@ -30,6 +36,7 @@ export default async function AdminCardsPage({ searchParams }: AdminCardsPagePro
   }
 
   const params = await searchParams;
+  const page = parsePage(params.page);
   const filters = {
     q: takeFirst(params.q) ?? "",
     section: (takeFirst(params.section) as Section | "all" | undefined) ?? "all",
@@ -37,7 +44,8 @@ export default async function AdminCardsPage({ searchParams }: AdminCardsPagePro
     sourceKind: takeFirst(params.sourceKind) ?? "all",
   };
 
-  const { cards, total, totalAll, sourceKinds } = await listAdminCards(filters);
+  const { cards, total, totalAll, sourceKinds, page: currentPage, totalPages } =
+    await listAdminCards(filters, { page });
   const usingSupabase = hasSupabaseConfig();
 
   return (
@@ -50,6 +58,11 @@ export default async function AdminCardsPage({ searchParams }: AdminCardsPagePro
             <p className="mt-4 max-w-4xl text-sm leading-8 text-[color:var(--muted)]">
               这里可以跨分区检索所有错题，进入完整编辑器维护题目、答案、备注和图片附件。当前共 {totalAll} 张卡片，本次筛选命中 {total} 张。
             </p>
+            {totalPages > 1 ? (
+              <p className="mt-2 text-sm leading-7 text-[color:var(--muted)]">
+                当前浏览第 {currentPage} / {totalPages} 页。
+              </p>
+            ) : null}
           </div>
           <div className="flex flex-wrap gap-3">
             <Link
@@ -132,58 +145,66 @@ export default async function AdminCardsPage({ searchParams }: AdminCardsPagePro
       </section>
 
       {cards.length > 0 ? (
-        <section className="grid gap-4">
-          {cards.map((card) => (
-            <article key={card.id} className="paper-card rounded-[28px] p-5 sm:p-6">
-              <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-                <div className="min-w-0 flex-1">
-                  <div className="flex flex-wrap items-center gap-2 text-xs text-[color:var(--muted)]">
-                    <span className="rounded-full bg-[rgba(166,75,42,0.1)] px-3 py-1 font-semibold tracking-[0.22em] text-[color:var(--accent-strong)]">
-                      {SECTION_LABELS[card.section]}
-                    </span>
-                    <span className="rounded-full border border-[color:var(--line)] px-3 py-1">
-                      {card.reasoningType || "未分类"}
-                    </span>
-                    <span className="rounded-full border border-[color:var(--line)] px-3 py-1">
-                      {getReviewCountLabel(card.reviewCount)}
-                    </span>
-                    <span className="rounded-full border border-[color:var(--line)] px-3 py-1">
-                      {card.assetCount ?? card.assets.length} 个附件
-                    </span>
+        <>
+          <section className="grid gap-4">
+            {cards.map((card) => (
+              <article key={card.id} className="paper-card rounded-[28px] p-5 sm:p-6">
+                <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-2 text-xs text-[color:var(--muted)]">
+                      <span className="rounded-full bg-[rgba(166,75,42,0.1)] px-3 py-1 font-semibold tracking-[0.22em] text-[color:var(--accent-strong)]">
+                        {SECTION_LABELS[card.section]}
+                      </span>
+                      <span className="rounded-full border border-[color:var(--line)] px-3 py-1">
+                        {card.reasoningType || "未分类"}
+                      </span>
+                      <span className="rounded-full border border-[color:var(--line)] px-3 py-1">
+                        {getReviewCountLabel(card.reviewCount)}
+                      </span>
+                      <span className="rounded-full border border-[color:var(--line)] px-3 py-1">
+                        {card.assetCount ?? card.assets.length} 个附件
+                      </span>
+                    </div>
+                    <h2 className="section-title mt-4 text-3xl leading-tight">{card.title}</h2>
+                    <p className="mt-3 line-clamp-3 text-sm leading-7 text-[color:var(--muted)]">
+                      {card.personalSummaryText || card.logicChainText || card.promptText || "这张卡片主要依靠附件承载内容。"}
+                    </p>
+                    <div className="mt-4 flex flex-wrap gap-4 text-sm text-[color:var(--muted)]">
+                      <span>来源：{card.sourceKind}</span>
+                      <span>更新时间：{formatTimestamp(card.updatedAt)}</span>
+                    </div>
                   </div>
-                  <h2 className="section-title mt-4 text-3xl leading-tight">{card.title}</h2>
-                  <p className="mt-3 line-clamp-3 text-sm leading-7 text-[color:var(--muted)]">
-                    {card.personalSummaryText || card.logicChainText || card.promptText || "这张卡片主要依靠附件承载内容。"}
-                  </p>
-                  <div className="mt-4 flex flex-wrap gap-4 text-sm text-[color:var(--muted)]">
-                    <span>来源：{card.sourceKind}</span>
-                    <span>更新时间：{formatTimestamp(card.updatedAt)}</span>
-                  </div>
-                </div>
-                <div className="flex flex-wrap gap-3">
-                  <Link
-                    href={`/admin/cards/${card.id}`}
-                    className="rounded-full bg-[color:var(--accent)] px-5 py-3 text-sm font-medium text-white transition hover:bg-[color:var(--accent-strong)]"
-                  >
-                    完整编辑
-                  </Link>
-                  {hasBrowsePageForSection(card.section) ? (
+                  <div className="flex flex-wrap gap-3">
                     <Link
-                      href={getCardDetailPath(card)}
-                      className="rounded-full border border-[color:var(--line)] px-5 py-3 text-sm font-medium text-[color:var(--foreground)] transition hover:border-[color:var(--accent)] hover:bg-[rgba(166,75,42,0.06)]"
+                      href={`/admin/cards/${card.id}`}
+                      className="rounded-full bg-[color:var(--accent)] px-5 py-3 text-sm font-medium text-white transition hover:bg-[color:var(--accent-strong)]"
                     >
-                      打开详情页
+                      完整编辑
                     </Link>
-                  ) : (
-                    <span className="rounded-full border border-dashed border-[color:var(--line)] px-5 py-3 text-sm text-[color:var(--muted)]">
-                      仅后台管理
-                    </span>
-                  )}
+                    {hasBrowsePageForSection(card.section) ? (
+                      <Link
+                        href={getCardDetailPath(card)}
+                        className="rounded-full border border-[color:var(--line)] px-5 py-3 text-sm font-medium text-[color:var(--foreground)] transition hover:border-[color:var(--accent)] hover:bg-[rgba(166,75,42,0.06)]"
+                      >
+                        打开详情页
+                      </Link>
+                    ) : (
+                      <span className="rounded-full border border-dashed border-[color:var(--line)] px-5 py-3 text-sm text-[color:var(--muted)]">
+                        仅后台管理
+                      </span>
+                    )}
+                  </div>
                 </div>
-              </div>
-            </article>
-          ))}
-        </section>
+              </article>
+            ))}
+          </section>
+          <PaginationControls
+            pathname="/admin/cards"
+            currentPage={currentPage}
+            totalPages={totalPages}
+            searchParams={filters}
+          />
+        </>
       ) : (
         <section className="paper-card rounded-[30px] p-8 text-sm leading-7 text-[color:var(--muted)]">
           当前筛选条件下没有匹配的卡片。

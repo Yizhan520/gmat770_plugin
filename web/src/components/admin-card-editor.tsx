@@ -616,6 +616,8 @@ export function AdminCardEditor({ card, usingSupabase }: AdminCardEditorProps) {
                             <img
                               src={asset.publicUrl}
                               alt={ASSET_KIND_LABELS[asset.assetKind]}
+                              loading="lazy"
+                              decoding="async"
                               className="block max-h-64 w-full object-contain"
                             />
                           </div>

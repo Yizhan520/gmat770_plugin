@@ -1,10 +1,9 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { AdminCardActions } from "@/components/admin-card-actions";
 import { AssetGallery } from "@/components/asset-gallery";
 import { CardDetailActions } from "@/components/card-detail-actions";
+import { DetailAdminPanel } from "@/components/detail-admin-panel";
 import { getMathCardDetailContext } from "@/lib/cards";
-import { hasAdminSession } from "@/lib/auth";
 import {
   getMathDetailLabelsFromCard,
   getMathKindFromCard,
@@ -33,10 +32,7 @@ function DetailBlock({
 
 export default async function MathCardDetailPage({ params }: MathCardDetailProps) {
   const { id } = await params;
-  const [{ card, nextCard }, isAdmin] = await Promise.all([
-    getMathCardDetailContext(id),
-    hasAdminSession(),
-  ]);
+  const { card, nextCard } = await getMathCardDetailContext(id);
 
   if (!card) {
     notFound();
@@ -108,8 +104,8 @@ export default async function MathCardDetailPage({ params }: MathCardDetailProps
           <CardDetailActions
             cardId={card.id}
             initialReviewCount={card.reviewCount}
-            isAdmin={isAdmin}
             nextCard={nextCard}
+            adminEditHref={`/admin/cards/${card.id}`}
           />
           <div className="paper-card rounded-[28px] p-6 text-sm leading-7 text-[color:var(--muted)]">
             数学错题的截图附件已移到下方全宽区域，方便直接阅读和放大查看。
@@ -119,7 +115,7 @@ export default async function MathCardDetailPage({ params }: MathCardDetailProps
 
       <AssetGallery assets={card.assets} />
 
-      {isAdmin ? <AdminCardActions card={card} /> : null}
+      <DetailAdminPanel card={card} />
 
       <div className="grid gap-6 lg:grid-cols-2">
         {blocks.map((block) => (
