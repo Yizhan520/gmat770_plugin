@@ -11,7 +11,7 @@ import {
   getMathModuleFromSourcePayload,
   normalizeMathKind,
 } from "@/lib/math";
-import { dataUrlToBuffer, sanitizeFileName, sha256Text } from "@/lib/importers/shared";
+import { imageDataUrlToBuffer, sanitizeFileName, sha256Text } from "@/lib/importers/shared";
 import type {
   AdminAssetUploadInput,
   AdminCardFilters,
@@ -1246,42 +1246,67 @@ export async function listImportJobs(limit = 8): Promise<ImportJob[]> {
   return ((bundledSeedData.importJobs as ImportJob[]) ?? []).slice(0, limit);
 }
 
+function getExtensionQuestionSourcePayload(
+  question: ExtensionQuestionPayload,
+  section: Section,
+  mathKind: string,
+) {
+  const sourcePayload = { ...(question as unknown as Record<string, unknown>) };
+  delete sourcePayload.questionScreenshot;
+  delete sourcePayload.analysisScreenshot;
+  delete sourcePayload.timestamp;
+
+  return {
+    ...sourcePayload,
+    section,
+    ...(mathKind ? { mathKind } : {}),
+  };
+}
+
+function getExtensionImageFileExtension(contentType: string) {
+  if (contentType === "image/jpeg") return "jpg";
+  if (contentType === "image/webp") return "webp";
+  return "png";
+}
+
 function extensionQuestionToCard(question: ExtensionQuestionPayload, index: number): ImportCardInput {
   const timestamp = question.timestamp ? new Date(question.timestamp) : new Date();
   const createdAt = Number.isNaN(timestamp.getTime()) ? new Date().toISOString() : timestamp.toISOString();
   const section = classifySection(question.questionType, question.examTitle, question.sectionHint);
   const mathKind = section === "quant" ? normalizeMathKind(question.questionType, question.examTitle) : "";
-  const sourcePayload = {
-    ...(question as unknown as Record<string, unknown>),
-    section,
-    ...(mathKind ? { mathKind } : {}),
-  };
+  const sourcePayload = getExtensionQuestionSourcePayload(question, section, mathKind);
   const contentHash = sha256Text(JSON.stringify(sourcePayload));
-  const questionScreenshot = dataUrlToBuffer(question.questionScreenshot);
-  const analysisScreenshot = dataUrlToBuffer(question.analysisScreenshot);
+  const questionScreenshot = imageDataUrlToBuffer(question.questionScreenshot);
+  const analysisScreenshot = imageDataUrlToBuffer(question.analysisScreenshot);
   const assets = [];
 
   if (questionScreenshot) {
-    const size = imageSize(questionScreenshot);
+    const size = imageSize(questionScreenshot.buffer);
     assets.push({
       assetKind: "question_screenshot" as const,
       anchorColumn: null,
       sortOrder: assets.length,
-      buffer: questionScreenshot,
-      fileName: sanitizeFileName(`${contentHash}-question.png`),
+      buffer: questionScreenshot.buffer,
+      fileName: sanitizeFileName(
+        `${contentHash}-question.${getExtensionImageFileExtension(questionScreenshot.contentType)}`,
+      ),
+      contentType: questionScreenshot.contentType,
       width: size.width ?? null,
       height: size.height ?? null,
     });
   }
 
   if (analysisScreenshot) {
-    const size = imageSize(analysisScreenshot);
+    const size = imageSize(analysisScreenshot.buffer);
     assets.push({
       assetKind: "analysis_screenshot" as const,
       anchorColumn: null,
       sortOrder: assets.length,
-      buffer: analysisScreenshot,
-      fileName: sanitizeFileName(`${contentHash}-analysis.png`),
+      buffer: analysisScreenshot.buffer,
+      fileName: sanitizeFileName(
+        `${contentHash}-analysis.${getExtensionImageFileExtension(analysisScreenshot.contentType)}`,
+      ),
+      contentType: analysisScreenshot.contentType,
       width: size.width ?? null,
       height: size.height ?? null,
     });
@@ -1444,7 +1469,7 @@ export async function saveImportBatch(batch: ImportBatch) {
         .from(bucket)
         .upload(objectPath, asset.buffer, {
           cacheControl: "3600",
-          contentType: "image/png",
+          contentType: asset.contentType ?? "image/png",
           upsert: false,
         });
 

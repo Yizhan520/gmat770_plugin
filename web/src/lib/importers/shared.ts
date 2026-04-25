@@ -54,6 +54,23 @@ export function dataUrlToBuffer(dataUrl?: string | null) {
   return Buffer.from(match[2], "base64");
 }
 
+export function imageDataUrlToBuffer(dataUrl?: string | null) {
+  if (!dataUrl) {
+    return null;
+  }
+
+  const match = dataUrl.match(/^data:(image\/(?:png|jpeg|jpg|webp));base64,(.+)$/i);
+  if (!match) {
+    return null;
+  }
+
+  const normalizedContentType = match[1].toLowerCase() === "image/jpg" ? "image/jpeg" : match[1].toLowerCase();
+  return {
+    buffer: Buffer.from(match[2], "base64"),
+    contentType: normalizedContentType,
+  };
+}
+
 export function createRelativeStoragePath(parts: string[]) {
   return parts
     .map((part) => sanitizeFileName(part))

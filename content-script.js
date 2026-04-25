@@ -20,6 +20,10 @@
   console.log('[GMAT Helper] Content script v2.0 loaded on:', window.location.href);
 
   const DESKTOP_CAPTURE_MIN_WIDTH = 1200;
+  const CAPTURE_SCALE = 1.5;
+  const CAPTURE_MAX_IMAGE_BYTES = 650 * 1024;
+  const CAPTURE_JPEG_QUALITIES = [0.82, 0.74, 0.68];
+  const CAPTURE_RESIZE_RATIOS = [0.9, 0.8, 0.7, 0.6];
 
   function normalizeText(text) {
     return (text || '').replace(/\s+/g, ' ').trim();
@@ -266,6 +270,58 @@
     return dataUrl;
   }
 
+  function estimateDataUrlBytes(dataUrl) {
+    if (!dataUrl) return 0;
+    const commaIndex = dataUrl.indexOf(',');
+    const base64Length = commaIndex >= 0 ? dataUrl.length - commaIndex - 1 : dataUrl.length;
+    return Math.ceil(base64Length * 3 / 4);
+  }
+
+  function resizeCanvas(sourceCanvas, ratio) {
+    const width = Math.max(1, Math.round(sourceCanvas.width * ratio));
+    const height = Math.max(1, Math.round(sourceCanvas.height * ratio));
+    const resizedCanvas = document.createElement('canvas');
+    resizedCanvas.width = width;
+    resizedCanvas.height = height;
+
+    const ctx = resizedCanvas.getContext('2d');
+    if (!ctx) return sourceCanvas;
+
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, width, height);
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(sourceCanvas, 0, 0, width, height);
+    return resizedCanvas;
+  }
+
+  function encodeCanvasForUpload(canvas) {
+    const pngDataUrl = canvas.toDataURL('image/png');
+    if (estimateDataUrlBytes(pngDataUrl) <= CAPTURE_MAX_IMAGE_BYTES) {
+      return pngDataUrl;
+    }
+
+    for (const quality of CAPTURE_JPEG_QUALITIES) {
+      const jpegDataUrl = canvas.toDataURL('image/jpeg', quality);
+      if (estimateDataUrlBytes(jpegDataUrl) <= CAPTURE_MAX_IMAGE_BYTES) {
+        return jpegDataUrl;
+      }
+    }
+
+    for (const ratio of CAPTURE_RESIZE_RATIOS) {
+      const resizedCanvas = resizeCanvas(canvas, ratio);
+      for (const quality of CAPTURE_JPEG_QUALITIES) {
+        const jpegDataUrl = resizedCanvas.toDataURL('image/jpeg', quality);
+        if (estimateDataUrlBytes(jpegDataUrl) <= CAPTURE_MAX_IMAGE_BYTES) {
+          return jpegDataUrl;
+        }
+      }
+    }
+
+    const smallestCanvas = resizeCanvas(canvas, CAPTURE_RESIZE_RATIOS[CAPTURE_RESIZE_RATIOS.length - 1]);
+    return smallestCanvas.toDataURL('image/jpeg', CAPTURE_JPEG_QUALITIES[CAPTURE_JPEG_QUALITIES.length - 1]);
+  }
+
   function shouldForceSurfaceCapture(element, options = {}) {
     if (!element || !options || typeof options.minWidth !== 'number') {
       return false;
@@ -278,12 +334,12 @@
     const canvas = await html2canvas(target, {
       useCORS: true,
       allowTaint: true,
-      scale: 1.5,
+      scale: CAPTURE_SCALE,
       logging: false,
       backgroundColor: '#ffffff'
     });
 
-    return normalizeCapturedDataUrl(canvas, canvas.toDataURL('image/png'));
+    return normalizeCapturedDataUrl(canvas, encodeCanvasForUpload(canvas));
   }
 
   function prepareCloneForCapture(node) {
@@ -307,6 +363,23 @@
       child.style.maxHeight = 'none';
       child.style.overflow = 'visible';
       child.style.opacity = '1';
+    });
+  }
+
+  function pruneAnalysisClone(node) {
+    if (!(node instanceof HTMLElement)) {
+      return;
+    }
+
+    Array.from(node.querySelectorAll('img, picture, video, iframe, object, embed')).forEach((media) => {
+      media.remove();
+    });
+
+    Array.from(node.querySelectorAll('p, div, section')).reverse().forEach((child) => {
+      if (child === node) return;
+      if (normalizeText(child.textContent)) return;
+      if (child.querySelector('table, ul, ol, canvas, svg')) return;
+      child.remove();
     });
   }
 
@@ -335,6 +408,9 @@
     validElements.forEach((element, index) => {
       const clone = element.cloneNode(true);
       prepareCloneForCapture(clone);
+      if (typeof options.prepareClone === 'function') {
+        options.prepareClone(clone, element);
+      }
       clone.style.width = '100%';
       clone.style.margin = index === 0 ? '0' : '16px 0 0';
       surface.appendChild(clone);
@@ -515,7 +591,7 @@
       if (!element || typeof html2canvas === 'undefined') return null;
 
       await waitForNextPaint();
-      if (!shouldForceSurfaceCapture(element, options) && isRenderableElement(element)) {
+      if (!options.forceSurface && !shouldForceSurfaceCapture(element, options) && isRenderableElement(element)) {
         const directDataUrl = await renderToDataUrl(element);
         if (directDataUrl) {
           return directDataUrl;
@@ -582,11 +658,23 @@
   async function captureAnalysisScreenshot() {
     if (isDryrunReportPage()) {
       return (
-        await captureElement(document.querySelector('.text_analysis'), { minWidth: DESKTOP_CAPTURE_MIN_WIDTH })
-      ) || captureElement(document.querySelector('.text_jiexi'), { minWidth: DESKTOP_CAPTURE_MIN_WIDTH });
+        await captureElement(document.querySelector('.text_analysis'), {
+          minWidth: DESKTOP_CAPTURE_MIN_WIDTH,
+          forceSurface: true,
+          prepareClone: pruneAnalysisClone
+        })
+      ) || captureElement(document.querySelector('.text_jiexi'), {
+        minWidth: DESKTOP_CAPTURE_MIN_WIDTH,
+        forceSurface: true,
+        prepareClone: pruneAnalysisClone
+      });
     }
 
-    return captureElement('.text_analysis', { minWidth: DESKTOP_CAPTURE_MIN_WIDTH });
+    return captureElement('.text_analysis', {
+      minWidth: DESKTOP_CAPTURE_MIN_WIDTH,
+      forceSurface: true,
+      prepareClone: pruneAnalysisClone
+    });
   }
 
   /**

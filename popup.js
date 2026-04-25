@@ -168,11 +168,29 @@
     return new TextEncoder().encode(JSON.stringify({ questions })).length;
   }
 
+  function formatBytes(bytes) {
+    if (bytes >= 1024 * 1024) {
+      return (bytes / 1024 / 1024).toFixed(1) + 'MB';
+    }
+    return Math.ceil(bytes / 1024) + 'KB';
+  }
+
+  function getQuestionLabel(question, index) {
+    return question.questionNumber || question.examTitle || `第 ${index + 1} 题`;
+  }
+
   function splitUploadBatches(questions) {
     const batches = [];
     let currentBatch = [];
 
-    questions.forEach((question) => {
+    questions.forEach((question, index) => {
+      const singleQuestionBytes = estimateUploadBodyBytes([question]);
+      if (singleQuestionBytes > MAX_UPLOAD_BODY_BYTES) {
+        throw new Error(
+          `${getQuestionLabel(question, index)} 单题内容约 ${formatBytes(singleQuestionBytes)}，仍超过上传限制；请关闭截图后重试。`
+        );
+      }
+
       if (currentBatch.length === 0) {
         currentBatch = [question];
         return;
@@ -311,6 +329,12 @@
     return idx >= 0 ? dataUrl.substring(idx + 1) : dataUrl;
   }
 
+  function getDataUrlImageExtension(dataUrl) {
+    const match = String(dataUrl || '').match(/^data:image\/(png|jpeg|jpg);base64,/i);
+    if (!match) return 'png';
+    return match[1].toLowerCase() === 'png' ? 'png' : 'jpeg';
+  }
+
   /**
    * 使用 ExcelJS 生成带截图的 Excel 文件
    */
@@ -420,7 +444,7 @@
             const base64 = dataUrlToBase64(q.questionScreenshot);
             const imageId = workbook.addImage({
               base64: base64,
-              extension: 'png'
+              extension: getDataUrlImageExtension(q.questionScreenshot)
             });
             // 截图列是第 11 列（K 列）
             ws.addImage(imageId, {
@@ -439,7 +463,7 @@
             const base64 = dataUrlToBase64(q.analysisScreenshot);
             const imageId = workbook.addImage({
               base64: base64,
-              extension: 'png'
+              extension: getDataUrlImageExtension(q.analysisScreenshot)
             });
             // 解析截图列是第 12 列（L 列）
             ws.addImage(imageId, {

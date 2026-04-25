@@ -120,6 +120,7 @@ export interface ImportAssetInput {
   sortOrder: number;
   buffer: Buffer;
   fileName: string;
+  contentType?: string;
   width: number | null;
   height: number | null;
 }
